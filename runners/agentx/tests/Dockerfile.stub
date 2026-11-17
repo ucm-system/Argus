@@ -1,0 +1,28 @@
+# Argus Runner: agentx —— **离线冒烟用的 stub 镜像**（不进发布矩阵）
+#
+# 发布镜像是 build/Dockerfile（真 agentx-harness）。这个镜像只装 runner 文件 + stub +
+# 测试依赖，用来在 CI 里秒级验证契约行为（不需要 1.85GB 语料、不需要被测服务）。
+#
+# 构建上下文仍是 Runner 目录：
+#   docker build -f runners/agentx/tests/Dockerfile.stub runners/agentx -t agentx-runner:stub
+#   docker run --rm agentx-runner:stub
+# 国内/内网加 --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.13-slim
+ARG BASE_IMAGE=python:3.13-slim
+FROM ${BASE_IMAGE}
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai
+
+# 测试用依赖（jsonschema/pyyaml 只在 tests/validate_result_schema.py 里用）
+RUN pip install --no-cache-dir pyyaml jsonschema
+
+WORKDIR /workspace
+RUN mkdir -p /workspace/input /workspace/output /runner
+
+COPY run.sh agentx_runner.py runner.yaml /runner/
+COPY tests /runner/tests
+RUN chmod 0755 /runner/run.sh /runner/agentx_runner.py /runner/tests/smoke.sh \
+ && chmod 0755 /runner/tests/*.py
+
+ENTRYPOINT ["bash", "/runner/tests/smoke.sh"]

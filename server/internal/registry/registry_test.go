@@ -62,26 +62,31 @@ func writeRunnerDir(t *testing.T, root, dir, manifest string) string {
 }
 
 func TestParseAcceptsRealEndpointProbe(t *testing.T) {
-	// 仓库里的全部真实 runner.yaml 都必须能通过 v2 注册校验（扫描目录仍是 testers/，
-	// 目录改名随 Makefile/部署波次）。
-	entries, err := os.ReadDir(filepath.Join("..", "..", "..", "testers"))
+	// 仓库里的全部真实 runner.yaml 都必须能通过 v2 注册校验。
+	// 扫描目录是 runners/（v2 更名已落地；旧写法指向 testers/，一直因目录不存在而整体 skip）。
+	entries, err := os.ReadDir(filepath.Join("..", "..", "..", "runners"))
 	if err != nil {
-		t.Skipf("testers dir not available: %v", err)
+		t.Skipf("runners dir not available: %v", err)
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join("..", "..", "..", "testers", e.Name(), "runner.yaml"))
+		raw, err := os.ReadFile(filepath.Join("..", "..", "..", "runners", e.Name(), "runner.yaml"))
 		if err != nil {
 			t.Skipf("%s: runner.yaml not available: %v", e.Name(), err)
 		}
-		if _, err := Parse(raw); err != nil {
+		// 内置 deploy/clean 角色只对内置名单放行（§5.1）；扫描器按目录名判定，这里照做。
+		parse := Parse
+		if BuiltinRunnerNames()[e.Name()] {
+			parse = ParseBuiltin
+		}
+		if _, err := parse(raw); err != nil {
 			t.Errorf("Parse(%s): %v", e.Name(), err)
 		}
 	}
 
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "testers", "endpoint-probe", "runner.yaml"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "runners", "endpoint-probe", "runner.yaml"))
 	if err != nil {
 		t.Skipf("real runner.yaml not available: %v", err)
 	}
@@ -89,7 +94,8 @@ func TestParseAcceptsRealEndpointProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse(endpoint-probe): %v", err)
 	}
-	if spec.Name != "endpoint-probe" || spec.Version != "1.0.0" {
+	// 版本随 Runner 演进（当前 1.0.3）：这里只钉契约面，不钉具体版本号。
+	if spec.Name != "endpoint-probe" {
 		t.Errorf("spec = %s", spec.Key())
 	}
 	if spec.Role != domain.RolePreCheck || spec.OnFailure != domain.OnFailureAbortTask {

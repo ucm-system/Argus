@@ -42,9 +42,9 @@
 | 注册表已实现：注册校验清单、`content_sha` 指纹（`sha256(规范化 runner.yaml + entry 字节)` 取前 16 位十六进制）、`orphaned` 只标记不删除且**标记落库** | `registry.go`、execution.md §10 |
 | 目录 API 对外只读三个端点：`GET /runners`、`GET /runners/{name}`、`GET /runners/{name}/versions/{version}`；**没有** `POST /runners`（v2 路径；MVP 现为 `/testers*`，随代码改造升级） | openapi `/api/v1/runners*` 段（ARCHITECTURE D-73） |
 | `registry.Register` 是内部 / 测试能力（只接收 `runner.yaml`，指纹只覆盖声明文件），不构成"上传 Runner"的对外功能 | `registry.go` |
-| 现存两个可运行实例：`endpoint-probe` 与 `aisbench-sla`（均已改 v2 契约：`runner.yaml` + entry + jsonl 输入） | README 进度表、`testers/*/runner.yaml`（v2 目录名 `runners/`，更名随改造） |
+| 现存三个可运行实例：`endpoint-probe`、`aisbench-sla` 与 `agentx`（均已改 v2 契约：`runner.yaml` + entry + jsonl 输入；`agentx` 的运行期用 python 实现，契约面仍在 `run.sh`） | README 进度表、`runners/*/runner.yaml` |
 
-现存两个实例的契约画像（按 v2 契约口径的真实取值）：
+前两个实例的契约画像（按 v2 契约口径的真实取值；`agentx` 的画像见 [`runners/agentx/README.md`](../../runners/agentx/README.md)）：
 
 | 项 | `endpoint-probe` | `aisbench-sla` |
 |---|---|---|

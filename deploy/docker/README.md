@@ -162,6 +162,7 @@ CI（`.github/workflows/**`，仓库维护者负责）与本脚本用**同一套
 | `server` | `-Component server` | `ghcr.io/ucm-system/argus-server` | `deploy/docker/server.Dockerfile` | 仓库根 |
 | `web` | `-Component web` | `ghcr.io/ucm-system/argus-web` | `deploy/docker/web.Dockerfile` | 仓库根 |
 | `runner:endpoint-probe` | `-Component runner:endpoint-probe` | `ghcr.io/ucm-system/argus-runner-endpoint-probe` | `runners/endpoint-probe/build/Dockerfile` | `runners/endpoint-probe/` |
+| `runner:agentx` | `-Component runner:agentx` | `ghcr.io/ucm-system/argus-runner-agentx` | `runners/agentx/build/Dockerfile` | `runners/agentx/` |
 
 每个镜像都打两个 tag（`:<tag>`、`:sha-<12>`）；CI 解析脚本输出的 `DIGEST=` 写 job summary，
 Helm chart 的 `image.digest`、Runner 的 `runner.yaml` 都用它。

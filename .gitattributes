@@ -12,6 +12,8 @@ Dockerfile text eol=lf
 *.yaml    text eol=lf
 *.yml     text eol=lf
 *.json    text eol=lf
+# 补丁由 `patch` 在容器里读取：CRLF 会让上下文行匹配不上（runners/*/build/*.patch）
+*.patch   text eol=lf
 
 # 文本类资源同样用 LF，避免 PR 里出现整文件改写
 *.md      text eol=lf
