@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 RUNNER_NAME = "agentx"
-RUNNER_VERSION = "1.0.0"
+RUNNER_VERSION = "1.0.1"
 
 OUT = Path(os.environ.get("AG_OUTPUT_DIR") or "/workspace/output")
 LOGS = OUT / "logs"
@@ -44,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "concurrency": 8,
     "benchmark_duration_seconds": 1800,
     "public_dataset": "semianalysis_cc_traces_weka_062126",
+    "dataset_dir": "",
     "num_dataset_entries": 0,
     "max_context_length": 0,
     "random_seed": 42,
@@ -67,8 +68,20 @@ INT_KEYS = (
     "warmup_requests_per_lane",
     "agentic_cache_warmup_duration",
 )
-STR_KEYS = ("public_dataset", "tokenizer", "scenario", "hf_cache_dir", "agentx_cmd", "extra_args")
+STR_KEYS = (
+    "public_dataset",
+    "dataset_dir",
+    "tokenizer",
+    "scenario",
+    "hf_cache_dir",
+    "agentx_cmd",
+    "extra_args",
+)
 BOOL_KEYS = ("allow_short_run", "keep_cache")
+
+# 本地语料目录：`--input-file` 的 weka_trace loader 只认「目录里每条 trace 一个 *.json」。
+# 公开语料是单个 traces.jsonl，所以 Runner 会在 <output>/.cache 下按行拆开再用。
+LOCAL_DATASET_SUFFIXES = (".jsonl",) 
 
 SCENARIOS = ("agentx", "inferencex-agentx-mvp")
 # scenario 的硬下限：稳态需要时间，短跑只是噪声（AgentX 场景规则，不是平台约束）。
@@ -172,7 +185,21 @@ def validate(params: dict[str, Any]) -> dict[str, Any]:
         )
     if clean["scenario"] not in SCENARIOS:
         raise ParamError(f"scenario 只能是 {' / '.join(SCENARIOS)}（收到 {clean['scenario']}）")
-    if not clean["public_dataset"]:
+    if clean["dataset_dir"]:
+        path = Path(clean["dataset_dir"])
+        if not path.exists():
+            raise ParamError(f"dataset_dir 不存在：{clean['dataset_dir']}（挂载了吗？）")
+        if path.is_dir():
+            if not any(path.glob("*.json")):
+                raise ParamError(
+                    f"dataset_dir 目录里没有 *.json：{path}"
+                    "（本地 weka_trace loader 要求一条 trace 一个 .json）"
+                )
+        elif path.suffix.lower() not in LOCAL_DATASET_SUFFIXES:
+            raise ParamError(
+                f"dataset_dir 只能是目录或 traces.jsonl，收到：{clean['dataset_dir']}"
+            )
+    elif not clean["public_dataset"]:
         raise ParamError("public_dataset 不能为空（语料身份是可比性的前提）")
     if clean["benchmark_duration_seconds"] < MIN_DURATION_SECONDS and not clean["allow_short_run"]:
         raise ParamError(
@@ -183,6 +210,41 @@ def validate(params: dict[str, Any]) -> dict[str, Any]:
     if not clean["agentx_cmd"]:
         raise ParamError("agentx_cmd 不能为空")
     return clean
+
+
+def prepare_local_dataset(path: Path) -> Path:
+    """把本地语料准备成 `--input-file` 需要的形态（目录 + 一条 trace 一个 .json）。
+
+    公开语料是一个 1.85 GB 的 traces.jsonl，而本地 `weka_trace` loader 只 glob 目录下的
+    `*.json`，所以这里按行拆开写到 `<output>/.cache/weka-split/`（随进程退出一起清理）。
+    已经是目录（里面是 *.json）就原样返回。
+    """
+    if path.is_dir():
+        return path
+
+    target = OUT / ".cache" / "weka-split"
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+    log(f"拆分本地语料 {path} -> {target}（每行一条 trace，一个 .json）")
+    written = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for lineno, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ParamError(f"语料第 {lineno} 行不是合法 JSON：{exc.msg}") from exc
+            if not isinstance(row, dict):
+                raise ParamError(f"语料第 {lineno} 行不是 JSON 对象")
+            trace_id = str(row.get("id") or row.get("trace_id") or f"trace-{lineno}")
+            out = target / f"{trace_id}.json"
+            if out.exists():
+                raise ParamError(f"语料里有重复的 trace id：{trace_id}（第 {lineno} 行）")
+            out.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+            written += 1
+    log(f"拆分完成：{written} 条 trace")
+    return target
 
 
 def parse_argv(argv: list[str]) -> tuple[str | None, str, str]:
@@ -228,7 +290,12 @@ def parse_argv(argv: list[str]) -> tuple[str | None, str, str]:
     return params_file, url, model
 
 
-def build_command(params: dict[str, Any], url: str, model: str) -> list[str]:
+def build_command(
+    params: dict[str, Any],
+    url: str,
+    model: str,
+    local_dataset: Path | None = None,
+) -> list[str]:
     """把参数映射成 agentx 命令。工具的内部 CLI 规则只活在这里（平台不解析，§5.2）。"""
     cmd = shlex.split(params["agentx_cmd"]) + [
         "profile",
@@ -240,8 +307,13 @@ def build_command(params: dict[str, Any], url: str, model: str) -> list[str]:
         model,
         "--scenario",
         params["scenario"],
-        "--public-dataset",
-        params["public_dataset"],
+    ]
+    if local_dataset is not None:
+        # 本地语料：走 weka_trace loader（目录 + 一条 trace 一个 .json）。
+        cmd += ["--custom-dataset-type", "weka_trace", "--input-file", str(local_dataset)]
+    else:
+        cmd += ["--public-dataset", params["public_dataset"]]
+    cmd += [
         "--concurrency",
         str(params["concurrency"]),
         "--benchmark-duration",
@@ -264,7 +336,11 @@ def build_command(params: dict[str, Any], url: str, model: str) -> list[str]:
         cmd += ["--warmup-requests-per-lane", str(params["warmup_requests_per_lane"])]
     if params["agentic_cache_warmup_duration"]:
         cmd += ["--agentic-cache-warmup-duration", str(params["agentic_cache_warmup_duration"])]
-    if params["benchmark_duration_seconds"] < MIN_DURATION_SECONDS:
+    if local_dataset is not None:
+        # 本地语料不是"钉住的公开语料"，scenario 规则要求显式放行（结果固定 submission_valid=false）。
+        if "--unsafe-override" not in cmd:
+            cmd += ["--unsafe-override"]
+    elif params["benchmark_duration_seconds"] < MIN_DURATION_SECONDS:
         # allow_short_run 已在 validate 里放行；agentx 侧必须显式打开 override 才会跑。
         cmd += ["--unsafe-override"]
     if os.environ.get("ENDPOINT_API_KEY"):
@@ -287,9 +363,12 @@ def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path]:
     mmap_dir = cache_root / "mmap"
     hf_dir.mkdir(parents=True, exist_ok=True)
     mmap_dir.mkdir(parents=True, exist_ok=True)
-    # 显式传进来的缓存目录优先（例如挂载的 PVC）：既支持 hf_cache_dir 参数，也支持
-    # AIPERF_DATASET_MMAP_CACHE_DIR 直接注入（跨 attempt 复用重建好的数据集）。
-    env["HF_HOME"] = str(hf_dir)
+    # 显式传进来的缓存目录优先（例如挂载的 PVC）：hf_cache_dir 参数最优先，其次是调用方
+    # 自己设的 HF_HOME（常用于挂一个已有 tokenizer 的缓存），都没有才落到 <output>/.cache。
+    if params["hf_cache_dir"]:
+        env["HF_HOME"] = str(hf_dir)
+    else:
+        env.setdefault("HF_HOME", str(hf_dir))
     env.setdefault("AIPERF_DATASET_MMAP_CACHE_DIR", str(mmap_dir))
     env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -449,6 +528,12 @@ def build_notes(export: dict[str, Any] | None, params: dict[str, Any], extra: li
             f"只回放了前 {params['num_dataset_entries']} 条 trace（num_dataset_entries），"
             "改变被回放的工作负载，结论不可与全量语料的运行比较"
         )
+    if params["dataset_dir"]:
+        notes.append(
+            "使用本地语料目录（--custom-dataset-type weka_trace / --input-file）："
+            "scenario 的「必须钉住公开语料」规则被 --unsafe-override 放行，"
+            "结果固定 submission_valid=false，不可与公开语料的运行比较"
+        )
     text = "；".join(n for n in notes if n)
     return text[:4000]
 
@@ -548,9 +633,18 @@ def run(argv: list[str]) -> int:
         )
     )
 
-    # 2) 调用 agentx
+    # 2) 本地语料（可选）：把 traces.jsonl 拆成 --input-file 需要的「一 trace 一 .json」
+    local_dataset: Path | None = None
+    if params["dataset_dir"]:
+        try:
+            local_dataset = prepare_local_dataset(Path(params["dataset_dir"]))
+        except ParamError as exc:
+            emit_failure("VALIDATION_ERROR", str(exc), started, notes="本地语料不可用")
+            return 2
+
+    # 3) 调用 agentx
     env, hf_dir = child_env(params)
-    cmd = build_command(params, url, model)
+    cmd = build_command(params, url, model, local_dataset)
     # 命令里只有 ${ENDPOINT_API_KEY} 引用形态的密钥，可以安全落日志。
     log("命令：" + " ".join(shlex.quote(part) for part in cmd))
     log(f"HF 缓存：{hf_dir}；mmap 缓存：{env['AIPERF_DATASET_MMAP_CACHE_DIR']}")
@@ -605,11 +699,15 @@ def run(argv: list[str]) -> int:
         "base_url": url,
         "model_name": model,
         "scenario": params["scenario"],
-        "public_dataset": params["public_dataset"],
+        "dataset_source": "local" if params["dataset_dir"] else "public",
         "concurrency": params["concurrency"],
         "benchmark_duration_seconds": params["benchmark_duration_seconds"],
         "random_seed": params["random_seed"],
     }
+    if params["dataset_dir"]:
+        payload["workload"]["dataset_dir"] = params["dataset_dir"]
+    else:
+        payload["workload"]["public_dataset"] = params["public_dataset"]
     if params["num_dataset_entries"]:
         payload["workload"]["num_dataset_entries"] = params["num_dataset_entries"]
     if params["max_context_length"]:

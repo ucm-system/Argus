@@ -1,5 +1,5 @@
 name: agentx
-version: 1.0.0
+version: 1.0.1
 display_name: AgentX 长上下文 agentic 压测
 description: |
   用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（Weka，393 条真实 Claude Code
@@ -13,7 +13,7 @@ description: |
   输入要点：url / model_name 不在输入文件里——由平台以 AG_SERVED_URL / AG_SERVED_MODEL_NAME
   注入；`tokenizer` 缺省按模型名推导，服务端用了内部别名（不是可解析的 HF 仓库）时必须显式给。
 
-  1.0.0 的设计取舍：
+  1.0.1 的设计取舍：
   - 语料必须可追溯：默认用 date-pinned 别名（semianalysis_cc_traces_weka_062126），滚动别名
     （..._with_subagents）会随语料更新而变，两次运行不可比；
   - `benchmark_duration_seconds` 低于 scenario 下限 900 秒时**直接判参数错误**（退出码 2），
@@ -31,7 +31,7 @@ entry: ["/runner/run.sh"]
 input_format: jsonl
 
 # 镜像由 CI 构建产出（见 build/Dockerfile 与 README 的构建节）。平台与任何运行环境都不 build（§6.2）。
-image: registry.dev.huawei.com/argus/agentx:1.0.0
+image: registry.dev.huawei.com/argus/agentx:1.0.1
 
 resources:
   # 冷启动阶段要下载 1.85GB 语料并把 393 条 trace 重建为 tokenized 数据集（按 CPU 数并行），
@@ -89,6 +89,20 @@ parameters:
       （393 条 with-subagents 会话，1.85GB，HuggingFace 公开无鉴权）。
       滚动别名 semanalsis_cc_traces_weka_with_subagents 会随新语料变化，两次运行不可比；
       `_256k` 变体会预丢单请求超 256k token 的 trace，上下文窗口约 256k 的服务用它。
+
+  - name: dataset_dir
+    type: string
+    required: false
+    default: ""
+    description: |
+      本地语料路径（**离线用**）：挂载进来的 HuggingFace 数据集目录，或其中的 traces.jsonl。
+      - 给目录：里面必须是「一条 trace 一个 *.json」（本地 weka_trace loader 只 glob *.json）；
+      - 给 traces.jsonl：Runner 会按行拆成 `<output>/.cache/weka-split/` 再用（1.85GB 约 1 分钟），
+        跑完随缓存一起删除。
+      设置后走 `--custom-dataset-type weka_trace --input-file`，**不再使用 public_dataset**，
+      并强制 `--unsafe-override`：scenario 的「必须钉住公开语料」规则被放行，结果固定
+      `submission_valid=false`，不可与公开语料的运行比较。记得显式给 `tokenizer`。
+    example: /data/cc-traces/traces.jsonl
 
   - name: num_dataset_entries
     type: integer

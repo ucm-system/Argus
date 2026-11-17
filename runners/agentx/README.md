@@ -129,36 +129,97 @@ agentx/
 
 | 约束 | 说明 |
 |---|---|
-| **`/tmp` 只有 256MiB** | 平台给只读根 + `/tmp` emptyDir 256Mi（execution §2.1），**装不下 1.85GB 语料**。所以 HF/mmap 缓存默认落在 `<output>/.cache`，跑完即删；要复用就 `hf_cache_dir` 指到挂载 PVC。被强杀（OOM/取消）时缓存会留在产物目录里，计入配额 |
-| **出网** | 默认从 HuggingFace 拉语料与 tokenizer。NetworkPolicy 默认 deny：要么放行 `huggingface.co`（或 `HF_ENDPOINT` 指向的内网镜像），要么预置缓存并设 `hf_cache_dir` |
+| **`/tmp` 只有 256MiB** | 平台给只读根 + `/tmp` emptyDir 256Mi（execution §2.1），**装不下 1.85GB 语料**。语料按「语料：挂载本地数据集目录」一节挂到 PVC / 只读目录；拆行与重建的临时文件落在 `<output>/.cache`，跑完删除 |
+| **出网** | 语料与 tokenizer 由挂载提供，**容器内不需要外网**：加 `-e HF_HUB_OFFLINE=1` 可以验证这一点。只有不挂载时才会回落到 HuggingFace 下载（需 NetworkPolicy 放行 `huggingface.co`，或 `HF_ENDPOINT` 指向内网镜像） |
 | **建议超时** | 冷启动 ≈ 10~20 分钟（下载 + 393 条重建）+ warmup + `benchmark_duration_seconds` + drain。`runners[].timeout_seconds` 建议 ≥ `duration + 1800`，正式 1800s 跑建议 ≥ `5400` |
 | **资源** | `4c / 8Gi`：重建阶段按 CPU 数并行；2c/2Gi 能跑但明显更慢 |
 | **独占** | `concurrency.endpoint_exclusive: true`：回放期间别的测量会污染吞吐与前缀命中率（§6.7） |
 | **非 root** | 镜像以 uid 10001 运行（PSA restricted）；挂载目录属主由平台 `fsGroup` 或调用方 `-u` 保证 |
 | **PL 别名** | 服务端模型名是内部别名时**必须**给 `tokenizer`，否则数据集构建阶段失败（退出码 1） |
 
+## 语料：挂载本地数据集目录（容器内不联网）
+
+镜像里没有语料（约 1 GB，只有 agentx-harness + python 运行时）。用你已经下载好的 HuggingFace
+仓库目录（`~/code/cc-traces-weka-062126`，含 `traces.jsonl` 1.85 GB）**只读挂进容器**，Runner 走
+`--input-file` 直接读它 —— 容器全程不需要外网。
+
+```bash
+docker run --rm \
+  -v ~/code/cc-traces-weka-062126:/data/cc-traces:ro \
+  -v /tmp/out:/workspace/output \
+  -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
+  -e HF_HUB_OFFLINE=1 \
+  ${IMAGE} \
+  /runner/run.sh --url http://10.0.0.10:8000/v1 --model_name Qwen3-32B
+```
+
+`/tmp/params.jsonl` 用 `dataset_dir` 指向挂载点（给 `.jsonl` 或已拆好的目录都行）：
+
+```json
+{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir":"/data/cc-traces/traces.jsonl","tokenizer":"builtin"}
+```
+
+`tokenizer` 用 `builtin` 是零依赖的（tiktoken 词表已烤进镜像）。要用真模型的 tokenizer，把已有缓存
+一起挂进来并让它可见：
+
+```bash
+  -v ~/.cache/huggingface:/data/hf -e HF_HOME=/data/hf \
+  # 参数里写 "tokenizer":"Qwen/Qwen3-32B"（或任意 HF tokenizer 仓库名）
+```
+
+### 这条路做了什么（以及必须知道的代价）
+
+- 本地 `weka_trace` loader 只认「目录 + 一条 trace 一个 `*.json`」，所以给 `traces.jsonl` 时 Runner 会
+  先按行拆到 `<output>/.cache/weka-split/`（1.85 GB 约 1 分钟），跑完随缓存删除（`keep_cache=true` 可留）。
+  已经拆好的目录则直接用，不再复制。
+- 走的是 `--custom-dataset-type weka_trace --input-file`，**不是** `--public-dataset`：scenario 的
+  「必须钉住公开语料」规则由 Runner 自动用 `--unsafe-override` 放行，因此结果**固定
+  `submission_valid=false`**，不能拿去与其他 AgentX 结果对比或提交。
+- `tokenizer` 必须显式给（本地语料不再按语料元数据推导）：`builtin`（tiktoken，零依赖）或真模型
+  tokenizer（配 `-e HF_HOME=<挂载的 tokenizer 缓存>`）。
+- 平台内：Execution Profile 把语料 PVC 只读挂到 `/data/cc-traces`，`dataset_dir` 指到里面的
+  `traces.jsonl` 即可；`/tmp` 只有 256 MiB（execution §2.1），不要往那儿放。
+
+### 如果要「可对比 / 可提交」的结果
+
+那就必须走 `--public-dataset`（钉住的公开语料），Runner 用 `datasets.load_dataset(<repo>)` 读，
+需要 **HuggingFace 的 datasets 缓存**（`<HF_HOME>/hub` + `<HF_HOME>/datasets`）。
+实测：只有 `hub/`（即 `hf download` 的产物）而 `datasets/` 缺失时，`HF_HUB_OFFLINE=1` 会报
+`Couldn't reach 'semianalysisai/cc-traces-weka-062126' on the Hub (OfflineModeIsEnabled)` —— 这条路
+必须让 `datasets` 在线建过一次转换缓存，或者干脆接受本节的本地语料模式。
+
 ## 独立运行
 
-镜像由 CI 产出，这里只 `docker run`，不 build（§6.2）：
+镜像由 CI 产出，这里只 `docker run`，不 build（§6.2）。**语料走上一节的挂载**（容器不需要外网）：
 
 ```bash
 export IMAGE=registry.dev.huawei.com/argus/agentx@sha256:...
-echo '{"concurrency":4,"benchmark_duration_seconds":60,"allow_short_run":true,"num_dataset_entries":8}' > /tmp/params.jsonl
+echo '{"concurrency":8,"benchmark_duration_seconds":60,"allow_short_run":true,"dataset_dir":"/data/cc-traces/traces.jsonl","tokenizer":"builtin"}' > /tmp/params.jsonl
+
 docker run --rm \
-  -e AG_OUTPUT_DIR=/workspace/output -e HF_TOKEN=... \
+  -v ~/code/cc-traces-weka-062126:/data/cc-traces:ro \
   -v /tmp/out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
+  -e HF_HUB_OFFLINE=1 \
   ${IMAGE} \
   /runner/run.sh --url http://10.0.0.10:8000/v1 --model_name Qwen3-32B
 jq . /tmp/out/result.json
 ```
 
-便捷脚本（`.local/params.jsonl` 存在时自动挂载）：
+便捷脚本（`run-local.sh`）：`.local/params.jsonl` 存在时自动挂成输入文件；设
+`DATASET_DIR=~/code/cc-traces-weka-062126` 时自动只读挂到 `/data/cc-traces`（参数文件里仍要写
+`dataset_dir`，脚本缺了会提醒）；`${HOME}/.cache/agentx/mmap` 会自动挂成 `/data/mmap` 并注入
+`AIPERF_DATASET_MMAP_CACHE_DIR`（重建缓存，位置可用 `MMAP_CACHE_DIR` 覆盖）。
 
 ```bash
 cd runners/agentx
-./run-local.sh --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
+mkdir -p .local
+echo '{"dataset_dir":"/data/cc-traces/traces.jsonl","tokenizer":"gpt2","concurrency":8,"benchmark_duration_seconds":1800}' > .local/params.jsonl
+DATASET_DIR=~/code/cc-traces-weka-062126 ./run-local.sh --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
 ```
+
+> 不提供 `dataset_dir` 且没挂语料时会回落到 `--public-dataset` 的 HuggingFace 下载（需要外网），
+> 这条退化路径只适合一次性验证。
 
 ## 构建
 
@@ -166,7 +227,7 @@ cd runners/agentx
 
 ```bash
 cd runners/agentx
-TAG=1.0.0
+TAG=1.0.1
 docker build -f build/Dockerfile -t registry.dev.huawei.com/argus/agentx:${TAG} .
 docker push registry.dev.huawei.com/argus/agentx:${TAG}
 ```
@@ -203,7 +264,7 @@ stub 只复现**产物形状**，验证的是 Runner 侧契约；agentx 自身�
 ## 验收动线（对应 [argus-develop-runner](../../skills/argus-develop-runner/SKILL.md)）
 
 1. `runner.yaml` 逐字段对照 `runners/mock-deploy` 样本；`placeholder` 单行合法 JSONL（`tests/test_runner_yaml.py` 已守）。
-2. 重启 argusd → `GET /api/v1/runners` 里出现 `agentx@1.0.0`（K-3：启动期扫描，无运行时注册）。
+2. 重启 argusd → `GET /api/v1/runners` 里出现 `agentx@1.0.1`（K-3：启动期扫描，无运行时注册）。
 3. `POST /tasks?dry_run=true` 过 → 小参数真提交（短跑 + 小语料）→ 看 `logs/` 与 `result.json`。
 
 > 内容一变就必须升 `version`（含 description / placeholder / display_name）：注册表按 name+version 钉内容 sha，同版本不同内容会 `RUNNER_VERSION_PINNED`（§5.6.1）。

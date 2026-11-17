@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 Argus
 # SPDX-License-Identifier: Apache-2.0
 """agentx Runner 的离线回归：参数校验 / 命令映射 / 结果归一化 / 退出码 / 密钥不落盘。
@@ -172,6 +172,27 @@ finally:
 extra = runner.build_command(params(extra_args="--use-server-token-count --tokenizer-trust-remote-code"), "u", "m")
 check("extra_args 按 shell 拆分追加", "--use-server-token-count" in extra and extra[-1] == "--tokenizer-trust-remote-code")
 
+# 本地语料（离线）：--input-file + 强制 override，且不再带 --public-dataset
+local_dir = tmp_params / "weka"
+local_dir.mkdir(exist_ok=True)
+(local_dir / "trace-a.json").write_text('{"id":"a"}', encoding="utf-8")
+local_cmd = runner.build_command(params(dataset_dir=str(local_dir)), "u", "m", local_dir)
+check("本地语料走 --input-file", "--input-file" in local_cmd and str(local_dir) in local_cmd)
+check("本地语料指定 weka_trace", local_cmd[local_cmd.index("--custom-dataset-type") + 1] == "weka_trace")
+check("本地语料强制 --unsafe-override", "--unsafe-override" in local_cmd)
+check("本地语料不带 --public-dataset", "--public-dataset" not in local_cmd)
+
+expect_param_error("dataset_dir 不存在被拒", lambda: runner.validate(params(dataset_dir="/nope/missing")))
+empty_dir = tmp_params / "empty"
+empty_dir.mkdir(exist_ok=True)
+expect_param_error("dataset_dir 目录无 *.json 被拒", lambda: runner.validate(params(dataset_dir=str(empty_dir))))
+
+# traces.jsonl → 按行拆成「一 trace 一 .json」
+jsonl = tmp_params / "traces.jsonl"
+jsonl.write_text('{"id": "t1", "messages": []}\n{"id": "t2", "messages": []}\n', encoding="utf-8")
+split_dir = runner.prepare_local_dataset(jsonl)
+check("traces.jsonl 被拆成两条", sorted(p.name for p in split_dir.glob("*.json")) == ["t1.json", "t2.json"])
+
 # --- 4. 结果归一化（§5.9 / 附录 A） -----------------------------------------
 
 export = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -226,7 +247,7 @@ check("stub 结果 status=succeeded", e2e["status"] == "succeeded")
 check("stub 结果有指标", len(e2e["metrics"]) >= 15, str(len(e2e["metrics"])))
 check("stub 结果有产物", any(a["path"].endswith("profile_export_aiperf.json") for a in e2e["artifacts"]))
 check("产物路径相对输出目录", all(not a["path"].startswith("/") for a in e2e["artifacts"]))
-check("runner 元信息正确", e2e["runner"]["name"] == "agentx" and e2e["runner"]["version"] == "1.0.0")
+check("runner 元信息正确", e2e["runner"]["name"] == "agentx" and e2e["runner"]["version"] == "1.0.1")
 check("workload 带并发与模型", e2e["workload"]["concurrency"] == 4
       and e2e["workload"]["model_name"] == "mock-llm")
 check("临时缓存已清理（产物配额）", not (OUT_DIR / ".cache").exists())

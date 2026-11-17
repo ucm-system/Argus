@@ -9,7 +9,7 @@
 #   2. **本脚本不 build**。镜像由 CI 产出，这里只 pull/run（§6.2）。
 #
 # 用法：
-#   IMAGE=registry.dev.huawei.com/argus/agentx:1.0.0 ./run-local.sh \
+#   IMAGE=registry.dev.huawei.com/argus/agentx:1.0.1 ./run-local.sh \
 #     --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
 #   业务参数走输入文件（JSONL）：.local/params.jsonl 存在时自动挂载为
 #   /workspace/input/params.jsonl:ro，也可以用 --params-file 指别的路径：
@@ -17,13 +17,14 @@
 #   产物默认写到 ./.local/out（可用 AG_OUTPUT_DIR 覆盖）
 #
 # 环境变量：IMAGE / AG_OUTPUT_DIR / ENDPOINT_API_KEY / HF_TOKEN / HF_ENDPOINT / AG_TASK_ID 等
-# 语料缓存：默认落在容器内 <output>/.cache（跑完删除）。想在本地复用 1.85GB 语料，
-#   用 hf_cache_dir 参数指到挂载进来的目录，例如 .local/hf -> /data/hf。
+# 语料：把下载好的 HF 仓库目录用 DATASET_DIR 传进来（只读挂到 /data/cc-traces），
+#   参数文件里写 {"dataset_dir":"/data/cc-traces/traces.jsonl"}；不传就回落到 --public-dataset（需外网）。
+#   重建缓存默认挂 ${HOME}/.cache/agentx/mmap（MMAP_CACHE_DIR 可换），第二次运行不必重建。
 # =============================================================================
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="${IMAGE:-registry.dev.huawei.com/argus/agentx:1.0.0}"
+IMAGE="${IMAGE:-registry.dev.huawei.com/argus/agentx:1.0.1}"
 OUT_DIR="${AG_OUTPUT_DIR:-${HERE}/.local/out}"
 PARAMS_SRC="${PARAMS_FILE:-${HERE}/.local/params.jsonl}"
 
@@ -49,6 +50,35 @@ MOUNTS=(-v "${OUT_DIR}:/workspace/output")
 if [ -f "${PARAMS_SRC}" ]; then
   echo "==> 挂载输入文件 ${PARAMS_SRC} -> /workspace/input/params.jsonl:ro"
   MOUNTS+=(-v "${PARAMS_SRC}:/workspace/input/params.jsonl:ro")
+fi
+
+# 本地数据集目录（可选，但推荐：不挂就只能回落到 HuggingFace 下载，需要外网）。
+#   DATASET_DIR=~/code/cc-traces-weka-062126 ./run-local.sh ...
+# 参数文件里仍需写 {"dataset_dir":"/data/cc-traces/traces.jsonl"}。
+if [ -n "${DATASET_DIR:-}" ]; then
+  if [ ! -d "${DATASET_DIR}" ]; then
+    echo "DATASET_DIR 不是目录：${DATASET_DIR}" >&2
+    exit 2
+  fi
+  echo "==> 挂载本地数据集 ${DATASET_DIR} -> /data/cc-traces:ro"
+  MOUNTS+=(-v "${DATASET_DIR}:/data/cc-traces:ro")
+  if [ -f "${PARAMS_SRC}" ] && ! grep -Eq '"dataset_dir"[[:space:]]*:' "${PARAMS_SRC}"; then
+    echo "!! 参数文件里没有 dataset_dir：本次会回落到 --public-dataset（需要外网）" >&2
+  fi
+fi
+
+# 数据集重建缓存（可选）：挂上以后第二次运行不必重建（key 含 random_seed）。
+MMAP_CACHE="${MMAP_CACHE_DIR:-${HOME}/.cache/agentx/mmap}"
+if mkdir -p "${MMAP_CACHE}" 2>/dev/null; then
+  echo "==> 挂载重建缓存 ${MMAP_CACHE} -> /data/mmap"
+  MOUNTS+=(-v "${MMAP_CACHE}:/data/mmap")
+  ENVARGS+=(-e "AIPERF_DATASET_MMAP_CACHE_DIR=/data/mmap")
+fi
+
+# HF 缓存（可选）：只有 hf_cache_dir 参数在用时才需要（例如 tokenizer 从 Hub 取）。
+if [ -n "${HF_CACHE_DIR:-}" ] && [ -d "${HF_CACHE_DIR}" ]; then
+  echo "==> 挂载 HF 缓存 ${HF_CACHE_DIR} -> /data/hf"
+  MOUNTS+=(-v "${HF_CACHE_DIR}:/data/hf")
 fi
 
 echo "==> docker run ${IMAGE} /runner/run.sh $*"
