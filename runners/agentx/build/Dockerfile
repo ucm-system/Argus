@@ -39,7 +39,12 @@ RUN set -eux; \
     chown -R 10001:10001 /workspace /runner /opt/tiktoken_cache
 
 # 依赖安装 + 裁剪 + 词表预缓存放在同一层：删除的文件不会留在下层。
-# tiktoken 预缓存让 --tokenizer builtin 在无外网（或 openaipublic 不可达）时也能用。
+#
+# tiktoken 预缓存只服务 `--tokenizer builtin`（下载 o200k_base 词表）：
+#   * 构建机连不上 openaipublic.blob.core.windows.net 时**不会让构建失败**，只打警告——
+#     生产上通常传模型权重目录（`--tokenizer /models/Qwen3-32B`），根本不需要它；
+#   * 想彻底跳过这次下载：`--build-arg TIKTOKEN_CACHE=0`（离线/可复现构建推荐）。
+ARG TIKTOKEN_CACHE=1
 RUN set -eux; \
     pip install --index-url "${PIP_INDEX_URL}" "agentx-harness==${AGENTX_VERSION}"; \
     if [ -n "${PRUNE}" ]; then pip uninstall -y ${PRUNE}; fi; \
@@ -50,7 +55,13 @@ RUN set -eux; \
     rm -rf /usr/local/lib/python3.13/idlelib /usr/local/lib/python3.13/turtledemo \
            /usr/local/lib/python3.13/tkinter /usr/local/lib/python3.13/ensurepip \
            /usr/local/lib/python3.13/lib2to3 /usr/local/lib/python3.13/test; \
-    TIKTOKEN_CACHE_DIR=/opt/tiktoken_cache python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"; \
+    mkdir -p /opt/tiktoken_cache; \
+    if [ "${TIKTOKEN_CACHE}" = "1" ]; then \
+      TIKTOKEN_CACHE_DIR=/opt/tiktoken_cache python -c "import tiktoken; tiktoken.get_encoding('o200k_base')" \
+        || echo "WARN: tiktoken 词表下载失败：--tokenizer builtin 不可用；传本地 tokenizer 目录不受影响" >&2; \
+    else \
+      echo "INFO: TIKTOKEN_CACHE=0，跳过 builtin 词表预缓存"; \
+    fi; \
     chown -R 10001:10001 /opt/tiktoken_cache
 
 # 相对于构建上下文（= Runner 根目录）。运行时逻辑：run.sh（契约面）+ agentx_runner.py（实现）。

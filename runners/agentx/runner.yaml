@@ -1,5 +1,5 @@
 name: agentx
-version: 1.0.1
+version: 1.0.5
 display_name: AgentX 长上下文 agentic 压测
 description: |
   用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（Weka，393 条真实 Claude Code
@@ -13,7 +13,7 @@ description: |
   输入要点：url / model_name 不在输入文件里——由平台以 AG_SERVED_URL / AG_SERVED_MODEL_NAME
   注入；`tokenizer` 缺省按模型名推导，服务端用了内部别名（不是可解析的 HF 仓库）时必须显式给。
 
-  1.0.1 的设计取舍：
+  1.0.2 的设计取舍：
   - 语料必须可追溯：默认用 date-pinned 别名（semianalysis_cc_traces_weka_062126），滚动别名
     （..._with_subagents）会随语料更新而变，两次运行不可比；
   - `benchmark_duration_seconds` 低于 scenario 下限 900 秒时**直接判参数错误**（退出码 2），
@@ -31,7 +31,7 @@ entry: ["/runner/run.sh"]
 input_format: jsonl
 
 # 镜像由 CI 构建产出（见 build/Dockerfile 与 README 的构建节）。平台与任何运行环境都不 build（§6.2）。
-image: registry.dev.huawei.com/argus/agentx:1.0.1
+image: registry.dev.huawei.com/argus/agentx:1.0.5
 
 resources:
   # 冷启动阶段要下载 1.85GB 语料并把 393 条 trace 重建为 tokenized 数据集（按 CPU 数并行），
@@ -95,14 +95,19 @@ parameters:
     required: false
     default: ""
     description: |
-      本地语料路径（**离线用**）：挂载进来的 HuggingFace 数据集目录，或其中的 traces.jsonl。
-      - 给目录：里面必须是「一条 trace 一个 *.json」（本地 weka_trace loader 只 glob *.json）；
-      - 给 traces.jsonl：Runner 会按行拆成 `<output>/.cache/weka-split/` 再用（1.85GB 约 1 分钟），
-        跑完随缓存一起删除。
-      设置后走 `--custom-dataset-type weka_trace --input-file`，**不再使用 public_dataset**，
+      本地语料目录（**离线用**）：给 `traces.jsonl` 的**父目录**（例：`/data/cc-traces`），不是文件路径。
+      Runner 在这个目录下找语料，识别顺序：
+
+      - 顶层已有「一条 trace 一个 `*.json`」→ 认为已拆好，直接用它；
+      - 只有 `traces.jsonl` → 拆到 `<dataset_dir>/.agentx-split/` 再跑。拆分只付一次：下一次运行
+        校验该目录里的 `manifest`（源文件路径 + size + mtime + 拆分版本 + 条数），命中就跳过拆分；
+        源文件被替换/重新下载或拆分逻辑升级 → 自动重拆。
+
+      所以语料目录必须**可写**（挂 `:ro` 会在拆分时失败）；只想读挂载就预先在该目录下放好拆好的
+      `*.json`。设置后走 `--custom-dataset-type weka_trace --input-file`，**不再使用 public_dataset**，
       并强制 `--unsafe-override`：scenario 的「必须钉住公开语料」规则被放行，结果固定
       `submission_valid=false`，不可与公开语料的运行比较。记得显式给 `tokenizer`。
-    example: /data/cc-traces/traces.jsonl
+    example: /data/cc-traces
 
   - name: num_dataset_entries
     type: integer
@@ -135,9 +140,17 @@ parameters:
     required: false
     default: ""
     description: |
-      HuggingFace tokenizer 仓库名或容器内本地路径。缺省按 AG_SERVED_MODEL_NAME 推导；
-      服务端用内部别名（如 my-team/qwen3-32b-ft）时**必须**显式给，否则数据集构建阶段失败。
-    example: Qwen/Qwen3-32B
+      分词器来源，三种写法：
+      - **容器内绝对路径**（推荐，生产常态）：模型权重目录或分词器目录，如 `/models/Qwen3-32B`，
+        由挂载提供；路径不存在会在参数预检阶段直接失败（退出码 2），不会跑到一半才报错。
+      - HF tokenizer 仓库名（如 `Qwen/Qwen3-32B`）：需要能访问 Hub 或 `HF_HOME` 里已有缓存。
+      - `builtin`：tiktoken o200k_base，零依赖（镜像内已预缓存），但**不是**服务端模型的分词器，
+        只适合冒烟；用本地 tokenizer 时不需要镜像里的这份词表。
+      留空则按 AG_SERVED_MODEL_NAME 推导——服务端用内部别名（不是可解析的 HF 仓库）时会失败。
+      注意：传本地路径时**不要设 `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`**——agentx-harness 1.0.7
+      的离线分支会把路径当 repo id 去查缓存并报 `HFValidationError`。本 Runner 检测到这个组合会
+      为本次执行摘掉这两个变量并打警告（结果里 metadata.hf_offline_ignored=true）。
+    example: /models/Qwen3-32B
 
   - name: scenario
     type: string

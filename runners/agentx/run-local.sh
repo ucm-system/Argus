@@ -9,7 +9,7 @@
 #   2. **本脚本不 build**。镜像由 CI 产出，这里只 pull/run（§6.2）。
 #
 # 用法：
-#   IMAGE=registry.dev.huawei.com/argus/agentx:1.0.1 ./run-local.sh \
+#   IMAGE=registry.dev.huawei.com/argus/agentx:1.0.5 ./run-local.sh \
 #     --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
 #   业务参数走输入文件（JSONL）：.local/params.jsonl 存在时自动挂载为
 #   /workspace/input/params.jsonl:ro，也可以用 --params-file 指别的路径：
@@ -17,14 +17,15 @@
 #   产物默认写到 ./.local/out（可用 AG_OUTPUT_DIR 覆盖）
 #
 # 环境变量：IMAGE / AG_OUTPUT_DIR / ENDPOINT_API_KEY / HF_TOKEN / HF_ENDPOINT / AG_TASK_ID 等
-# 语料：把下载好的 HF 仓库目录用 DATASET_DIR 传进来（只读挂到 /data/cc-traces），
-#   参数文件里写 {"dataset_dir":"/data/cc-traces/traces.jsonl"}；不传就回落到 --public-dataset（需外网）。
+# 语料：把下载好的 HF 仓库目录用 DATASET_DIR 传进来（挂到 /data/cc-traces，**可写**：
+#   Runner 要在它下面建 .agentx-split/ 拆行并复用），参数文件里写 {"dataset_dir":"/data/cc-traces"}；
+#   不传就回落到 --public-dataset（需外网）。
 #   重建缓存默认挂 ${HOME}/.cache/agentx/mmap（MMAP_CACHE_DIR 可换），第二次运行不必重建。
 # =============================================================================
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="${IMAGE:-registry.dev.huawei.com/argus/agentx:1.0.1}"
+IMAGE="${IMAGE:-registry.dev.huawei.com/argus/agentx:1.0.5}"
 OUT_DIR="${AG_OUTPUT_DIR:-${HERE}/.local/out}"
 PARAMS_SRC="${PARAMS_FILE:-${HERE}/.local/params.jsonl}"
 
@@ -54,14 +55,14 @@ fi
 
 # 本地数据集目录（可选，但推荐：不挂就只能回落到 HuggingFace 下载，需要外网）。
 #   DATASET_DIR=~/code/cc-traces-weka-062126 ./run-local.sh ...
-# 参数文件里仍需写 {"dataset_dir":"/data/cc-traces/traces.jsonl"}。
+# 参数文件里仍需写 {"dataset_dir":"/data/cc-traces"}。
 if [ -n "${DATASET_DIR:-}" ]; then
   if [ ! -d "${DATASET_DIR}" ]; then
     echo "DATASET_DIR 不是目录：${DATASET_DIR}" >&2
     exit 2
   fi
-  echo "==> 挂载本地数据集 ${DATASET_DIR} -> /data/cc-traces:ro"
-  MOUNTS+=(-v "${DATASET_DIR}:/data/cc-traces:ro")
+  echo "==> 挂载本地数据集 ${DATASET_DIR} -> /data/cc-traces（可写，用于 .agentx-split）"
+  MOUNTS+=(-v "${DATASET_DIR}:/data/cc-traces")
   if [ -f "${PARAMS_SRC}" ] && ! grep -Eq '"dataset_dir"[[:space:]]*:' "${PARAMS_SRC}"; then
     echo "!! 参数文件里没有 dataset_dir：本次会回落到 --public-dataset（需要外网）" >&2
   fi

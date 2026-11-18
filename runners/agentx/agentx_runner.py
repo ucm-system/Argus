@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 RUNNER_NAME = "agentx"
-RUNNER_VERSION = "1.0.1"
+RUNNER_VERSION = "1.0.5"
 
 OUT = Path(os.environ.get("AG_OUTPUT_DIR") or "/workspace/output")
 LOGS = OUT / "logs"
@@ -79,9 +79,6 @@ STR_KEYS = (
 )
 BOOL_KEYS = ("allow_short_run", "keep_cache")
 
-# 本地语料目录：`--input-file` 的 weka_trace loader 只认「目录里每条 trace 一个 *.json」。
-# 公开语料是单个 traces.jsonl，所以 Runner 会在 <output>/.cache 下按行拆开再用。
-LOCAL_DATASET_SUFFIXES = (".jsonl",) 
 
 SCENARIOS = ("agentx", "inferencex-agentx-mvp")
 # scenario 的硬下限：稳态需要时间，短跑只是噪声（AgentX 场景规则，不是平台约束）。
@@ -189,18 +186,23 @@ def validate(params: dict[str, Any]) -> dict[str, Any]:
         path = Path(clean["dataset_dir"])
         if not path.exists():
             raise ParamError(f"dataset_dir 不存在：{clean['dataset_dir']}（挂载了吗？）")
-        if path.is_dir():
-            if not any(path.glob("*.json")):
-                raise ParamError(
-                    f"dataset_dir 目录里没有 *.json：{path}"
-                    "（本地 weka_trace loader 要求一条 trace 一个 .json）"
-                )
-        elif path.suffix.lower() not in LOCAL_DATASET_SUFFIXES:
+        if not path.is_dir():
             raise ParamError(
-                f"dataset_dir 只能是目录或 traces.jsonl，收到：{clean['dataset_dir']}"
+                f"dataset_dir 要给 traces.jsonl 的**父目录**，不是文件：{clean['dataset_dir']}"
+                "（例：/data/cc-traces）"
+            )
+        if not (path / DATASET_JSONL_NAME).is_file() and not any(path.glob("*.json")):
+            raise ParamError(
+                f"dataset_dir 里既没有 {DATASET_JSONL_NAME}，也没有已拆好的 *.json：{path}"
             )
     elif not clean["public_dataset"]:
         raise ParamError("public_dataset 不能为空（语料身份是可比性的前提）")
+
+    if clean["tokenizer"].startswith("/") and not Path(clean["tokenizer"]).exists():
+        raise ParamError(
+            f"tokenizer 指向的本地路径不存在：{clean['tokenizer']}"
+            "（模型权重目录/分词器目录挂载了吗？也可以用 tokenizer 仓库名或 builtin）"
+        )
     if clean["benchmark_duration_seconds"] < MIN_DURATION_SECONDS and not clean["allow_short_run"]:
         raise ParamError(
             f"benchmark_duration_seconds={clean['benchmark_duration_seconds']} 低于 scenario 下限 "
@@ -212,22 +214,71 @@ def validate(params: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
-def prepare_local_dataset(path: Path) -> Path:
-    """把本地语料准备成 `--input-file` 需要的形态（目录 + 一条 trace 一个 .json）。
+# 语料文件名；拆好的结果放在 dataset_dir 下的隐藏子目录里（不污染语料目录，也不会被
+# weka_trace loader 的顶层 `*.json` glob 误读）。
+DATASET_JSONL_NAME = "traces.jsonl"
+SPLIT_SUBDIR = ".agentx-split"
+# 拆行缓存的 manifest 与格式版本：源文件（size+mtime）或拆分逻辑变了就重拆。
+SPLIT_CACHE_MANIFEST = "manifest"
+SPLIT_CACHE_VERSION = 1
 
-    公开语料是一个 1.85 GB 的 traces.jsonl，而本地 `weka_trace` loader 只 glob 目录下的
-    `*.json`，所以这里按行拆开写到 `<output>/.cache/weka-split/`（随进程退出一起清理）。
-    已经是目录（里面是 *.json）就原样返回。
+
+def _split_cache_key(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "version": SPLIT_CACHE_VERSION,
+        "source": str(path.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def prepare_local_dataset(dataset_dir: Path) -> Path:
+    """把 `dataset_dir` 准备成 `--input-file` 需要的形态（目录 + 一条 trace 一个 .json）。
+
+    识别顺序：
+
+    1. `dataset_dir` 顶层已经有 `*.json`（没给 traces.jsonl）→ 认为语料已经拆好，原样使用；
+    2. 有 `traces.jsonl` → 拆到 `dataset_dir/.agentx-split/`，并按 `manifest` 复用：
+       源文件（绝对路径 + size + mtime）与拆分版本都没变就直接跳过拆分；
+    3. 两者都没有 → 由 validate 提前拒掉。
+
+    所以拆分只付一次：语料目录挂成可写，第二次运行就是"复用"，不再读写 1.85GB。
     """
-    if path.is_dir():
-        return path
+    source = dataset_dir / DATASET_JSONL_NAME
+    if not source.is_file():
+        return dataset_dir  # 已拆好的目录：直接用
 
-    target = OUT / ".cache" / "weka-split"
-    shutil.rmtree(target, ignore_errors=True)
-    target.mkdir(parents=True, exist_ok=True)
-    log(f"拆分本地语料 {path} -> {target}（每行一条 trace，一个 .json）")
+    target = dataset_dir / SPLIT_SUBDIR
+    manifest_path = target / SPLIT_CACHE_MANIFEST
+    key = _split_cache_key(source)
+
+    if manifest_path.is_file():
+        try:
+            cached = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached = None
+        if isinstance(cached, dict) and {k: cached.get(k) for k in key} == key:
+            count = cached.get("count")
+            if isinstance(count, int) and len(list(target.glob("*.json"))) == count:
+                log(f"复用已拆好的语料：{target}（{count} 条 trace，跳过拆分）")
+                return target
+        log(f"拆分缓存已失效（源文件或拆分版本变了），重新拆分：{target}")
+
+    # 先拆到目标下的临时子目录，再逐个 move 进来（manifest 最后写，半途失败不会被当成可用缓存）
+    staging = target / ".staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staging.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ParamError(
+            f"无法在 dataset_dir 下创建拆分目录：{target}（{exc}）；"
+            "把语料目录挂成可写，或预先在该目录下放好拆好的 *.json"
+        ) from exc
+
+    log(f"拆分本地语料 {source} -> {target}（每行一条 trace，一个 .json）")
     written = 0
-    with path.open("r", encoding="utf-8") as handle:
+    with source.open("r", encoding="utf-8") as handle:
         for lineno, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
@@ -238,11 +289,20 @@ def prepare_local_dataset(path: Path) -> Path:
             if not isinstance(row, dict):
                 raise ParamError(f"语料第 {lineno} 行不是 JSON 对象")
             trace_id = str(row.get("id") or row.get("trace_id") or f"trace-{lineno}")
-            out = target / f"{trace_id}.json"
+            out = staging / f"{trace_id}.json"
             if out.exists():
                 raise ParamError(f"语料里有重复的 trace id：{trace_id}（第 {lineno} 行）")
             out.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
             written += 1
+
+    # 清掉上一次可能残留的 *.json，再发布本次结果（manifest 是提交标记）
+    for stale in target.glob("*.json"):
+        stale.unlink(missing_ok=True)
+    manifest_path.unlink(missing_ok=True)
+    for staged in staging.glob("*.json"):
+        staged.replace(target / staged.name)
+    manifest_path.write_text(json.dumps({**key, "count": written}), encoding="utf-8")
+    shutil.rmtree(staging, ignore_errors=True)
     log(f"拆分完成：{written} 条 trace")
     return target
 
@@ -351,7 +411,12 @@ def build_command(
     return cmd
 
 
-def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path]:
+def is_local_tokenizer(tokenizer: str) -> bool:
+    """tokenizer 是否是容器内的本地路径（而不是 HF 仓库名或 builtin）。"""
+    return tokenizer.startswith("/")
+
+
+def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path, bool]:
     """子进程环境 + 语料缓存目录。
 
     平台只给 /tmp（256MiB，execution §2.1）与输出目录可写，而公共语料是 1.85GB ——
@@ -376,7 +441,22 @@ def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path]:
     # 这里再兜一层，避免换 scenario 后踩同一个坑。
     env.setdefault("AIPERF_DATASET_CONFIGURATION_TIMEOUT", "1800")
     env.setdefault("AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT", "1800")
-    return env, hf_dir
+
+    # agentx-harness 1.0.7 的离线分支会把 tokenizer 名当 repo id 去 snapshot_download，
+    # 传本地目录会直接 HFValidationError。本地路径本身不需要 Hub，所以这里把 offline 变量
+    # 从子进程环境里摘掉（只影响这次执行），并在 result.json 里留痕。
+    offline_ignored = False
+    if is_local_tokenizer(params["tokenizer"]) and (
+        env.get("HF_HUB_OFFLINE") or env.get("TRANSFORMERS_OFFLINE")
+    ):
+        log(
+            "本地 tokenizer 与 HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE 不兼容"
+            "（agentx 1.0.7 的离线分支会把路径当 repo id），已为本次执行摘掉这两个变量"
+        )
+        env.pop("HF_HUB_OFFLINE", None)
+        env.pop("TRANSFORMERS_OFFLINE", None)
+        offline_ignored = True
+    return env, hf_dir, offline_ignored
 
 
 def run_agentx(cmd: list[str], env: dict[str, str], log_path: Path) -> tuple[int, bool]:
@@ -643,7 +723,7 @@ def run(argv: list[str]) -> int:
             return 2
 
     # 3) 调用 agentx
-    env, hf_dir = child_env(params)
+    env, hf_dir, offline_ignored = child_env(params)
     cmd = build_command(params, url, model, local_dataset)
     # 命令里只有 ${ENDPOINT_API_KEY} 引用形态的密钥，可以安全落日志。
     log("命令：" + " ".join(shlex.quote(part) for part in cmd))
@@ -723,8 +803,14 @@ def run(argv: list[str]) -> int:
         "submission_invalid_reasons": meta.get("submission_invalid_reasons") or [],
         "hf_cache_dir": str(hf_dir),
         "dataset_cache_kept": bool(params["keep_cache"]),
+        "hf_offline_ignored": offline_ignored,
         "command": " ".join(shlex.quote(part) for part in cmd),
     }
+    if offline_ignored:
+        transcript.append(
+            "本次执行已临时摘掉 HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE：本地 tokenizer 路径在 "
+            "agentx-harness 1.0.7 的离线分支里会被当成 repo id"
+        )
     payload["notes"] = build_notes(export, params, transcript)
     write_result(payload)
 

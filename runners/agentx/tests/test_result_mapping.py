@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 Argus
 # SPDX-License-Identifier: Apache-2.0
 """agentx Runner 的离线回归：参数校验 / 命令映射 / 结果归一化 / 退出码 / 密钥不落盘。
@@ -122,6 +122,25 @@ expect_param_error(
 )
 expect_param_error("空语料名被拒", lambda: runner.validate(params(public_dataset=" ")))
 
+# tokenizer：本地绝对路径必须存在（fail fast，不要跑到数据集构建才报错）
+check("tokenizer=builtin 通过", runner.validate(params(tokenizer="builtin"))["tokenizer"] == "builtin")
+check("tokenizer=仓库名 通过", runner.validate(params(tokenizer="Qwen/Qwen3-32B"))["tokenizer"] == "Qwen/Qwen3-32B")
+expect_param_error(
+    "tokenizer 本地路径不存在被拒",
+    lambda: runner.validate(params(tokenizer="/models/does-not-exist")),
+)
+
+# 本地 tokenizer 与 HF_HUB_OFFLINE 的冲突处理：1.0.7 的离线分支会把路径当 repo id
+check("本地 tokenizer 判定", runner.is_local_tokenizer("/models/gpt2") and not runner.is_local_tokenizer("gpt2"))
+os.environ["HF_HUB_OFFLINE"] = "1"
+try:
+    env_local, _, ignored_local = runner.child_env(params(tokenizer="/models/gpt2"))
+    check("本地 tokenizer 时摘掉 HF_HUB_OFFLINE", ignored_local and "HF_HUB_OFFLINE" not in env_local)
+    env_builtin, _, ignored_builtin = runner.child_env(params(tokenizer="builtin"))
+    check("builtin 时保留 HF_HUB_OFFLINE", not ignored_builtin and env_builtin.get("HF_HUB_OFFLINE") == "1")
+finally:
+    os.environ.pop("HF_HUB_OFFLINE", None)
+
 # --- 2. 输入文件解析（§5.3 / §5.4） -----------------------------------------
 
 tmp_params = scratch_dir("agentx-runner-params-")
@@ -183,15 +202,45 @@ check("本地语料强制 --unsafe-override", "--unsafe-override" in local_cmd)
 check("本地语料不带 --public-dataset", "--public-dataset" not in local_cmd)
 
 expect_param_error("dataset_dir 不存在被拒", lambda: runner.validate(params(dataset_dir="/nope/missing")))
+expect_param_error(
+    "dataset_dir 给文件被拒（要父目录）",
+    lambda: runner.validate(params(dataset_dir=str(local_dir / "trace-a.json"))),
+)
 empty_dir = tmp_params / "empty"
 empty_dir.mkdir(exist_ok=True)
-expect_param_error("dataset_dir 目录无 *.json 被拒", lambda: runner.validate(params(dataset_dir=str(empty_dir))))
+expect_param_error(
+    "dataset_dir 既无 traces.jsonl 也无 *.json 被拒",
+    lambda: runner.validate(params(dataset_dir=str(empty_dir))),
+)
 
-# traces.jsonl → 按行拆成「一 trace 一 .json」
-jsonl = tmp_params / "traces.jsonl"
+# dataset_dir 下有 traces.jsonl → 拆到 <dataset_dir>/.agentx-split
+corpus = tmp_params / "corpus"
+corpus.mkdir()
+jsonl = corpus / "traces.jsonl"
 jsonl.write_text('{"id": "t1", "messages": []}\n{"id": "t2", "messages": []}\n', encoding="utf-8")
-split_dir = runner.prepare_local_dataset(jsonl)
-check("traces.jsonl 被拆成两条", sorted(p.name for p in split_dir.glob("*.json")) == ["t1.json", "t2.json"])
+split = runner.prepare_local_dataset(corpus)
+check("拆到 <dataset_dir>/.agentx-split", split == corpus / ".agentx-split")
+check("traces.jsonl 被拆成两条", sorted(p.name for p in split.glob("*.json")) == ["t1.json", "t2.json"])
+check("拆分目录里没有伪装成 trace 的非 trace 文件",
+      all(p.name.endswith(".json") for p in split.glob("*.json")))
+
+# 复用：manifest 命中即跳过拆分；源文件变了就重拆
+tampered = split / "t1.json"
+tampered.write_text('{"tampered": true}', encoding="utf-8")
+again = runner.prepare_local_dataset(corpus)
+check("第二次命中缓存不重写", again == split and "tampered" in tampered.read_text(encoding="utf-8"))
+jsonl.write_text('{"id": "t1", "messages": []}\n{"id": "t2", "messages": []}\n{"id": "t3", "messages": []}\n',
+                 encoding="utf-8")
+third = runner.prepare_local_dataset(corpus)
+check("源文件变化后重拆",
+      sorted(p.name for p in third.glob("*.json")) == ["t1.json", "t2.json", "t3.json"]
+      and "tampered" not in tampered.read_text(encoding="utf-8"))
+
+# 已经拆好的目录（没有 traces.jsonl）→ 原样使用
+ready = tmp_params / "ready"
+ready.mkdir()
+(ready / "x.json").write_text('{"id":"x"}', encoding="utf-8")
+check("已拆好的目录原样使用", runner.prepare_local_dataset(ready) == ready)
 
 # --- 4. 结果归一化（§5.9 / 附录 A） -----------------------------------------
 
@@ -247,7 +296,7 @@ check("stub 结果 status=succeeded", e2e["status"] == "succeeded")
 check("stub 结果有指标", len(e2e["metrics"]) >= 15, str(len(e2e["metrics"])))
 check("stub 结果有产物", any(a["path"].endswith("profile_export_aiperf.json") for a in e2e["artifacts"]))
 check("产物路径相对输出目录", all(not a["path"].startswith("/") for a in e2e["artifacts"]))
-check("runner 元信息正确", e2e["runner"]["name"] == "agentx" and e2e["runner"]["version"] == "1.0.1")
+check("runner 元信息正确", e2e["runner"]["name"] == "agentx" and e2e["runner"]["version"] == "1.0.5")
 check("workload 带并发与模型", e2e["workload"]["concurrency"] == 4
       and e2e["workload"]["model_name"] == "mock-llm")
 check("临时缓存已清理（产物配额）", not (OUT_DIR / ".cache").exists())
