@@ -9,7 +9,7 @@
 #   2. **本脚本不 build**。镜像由 CI 产出，这里只 pull/run（§6.2）。
 #
 # 用法：
-#   IMAGE=registry.dev.huawei.com/argus/agentx:1.0.5 ./run-local.sh \
+#   IMAGE=registry.dev.huawei.com/argus/agentx:1.0.6 ./run-local.sh \
 #     --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
 #   业务参数走输入文件（JSONL）：.local/params.jsonl 存在时自动挂载为
 #   /workspace/input/params.jsonl:ro，也可以用 --params-file 指别的路径：
@@ -25,7 +25,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="${IMAGE:-registry.dev.huawei.com/argus/agentx:1.0.5}"
+IMAGE="${IMAGE:-registry.dev.huawei.com/argus/agentx:1.0.6}"
 OUT_DIR="${AG_OUTPUT_DIR:-${HERE}/.local/out}"
 PARAMS_SRC="${PARAMS_FILE:-${HERE}/.local/params.jsonl}"
 

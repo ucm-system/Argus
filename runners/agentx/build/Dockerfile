@@ -14,13 +14,14 @@
 #   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.13-slim
 #   --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 #
+# agentx-harness 版本用 --build-arg AGENTX_VERSION= 覆盖（默认 1.0.14）。
 # 体积：完整安装约 1.8GB。profile 路径从不 import 绘图/调参栈，所以把它们在**同一层**
 # 卸掉（跨层删除只是遮蔽，镜像不会变小）——落到约 1.0GB。需要 agentx plot / sweep 的场景
 # 请用 --build-arg PRUNE= 关掉裁剪。
 ARG BASE_IMAGE=python:3.13-slim
 FROM ${BASE_IMAGE}
 
-ARG AGENTX_VERSION=1.0.7
+ARG AGENTX_VERSION=1.0.14
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PRUNE="plotly dash dash-bootstrap-components seaborn matplotlib kaleido fonttools optuna sqlalchemy alembic"
 

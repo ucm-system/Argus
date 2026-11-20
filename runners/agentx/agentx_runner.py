@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 RUNNER_NAME = "agentx"
-RUNNER_VERSION = "1.0.5"
+RUNNER_VERSION = "1.0.11"
 
 OUT = Path(os.environ.get("AG_OUTPUT_DIR") or "/workspace/output")
 LOGS = OUT / "logs"
@@ -48,12 +48,13 @@ DEFAULTS: dict[str, Any] = {
     "num_dataset_entries": 0,
     "max_context_length": 0,
     "random_seed": 42,
-    "tokenizer": "",
     "scenario": "agentx",
     "warmup_requests_per_lane": 0,
     "agentic_cache_warmup_duration": 0,
     "allow_short_run": False,
+    "offline": False,
     "hf_cache_dir": "",
+    "mmap_cache_dir": "",
     "keep_cache": False,
     "agentx_cmd": "agentx",
     "extra_args": "",
@@ -71,13 +72,13 @@ INT_KEYS = (
 STR_KEYS = (
     "public_dataset",
     "dataset_dir",
-    "tokenizer",
     "scenario",
     "hf_cache_dir",
+    "mmap_cache_dir",
     "agentx_cmd",
     "extra_args",
 )
-BOOL_KEYS = ("allow_short_run", "keep_cache")
+BOOL_KEYS = ("allow_short_run", "keep_cache", "offline")
 
 
 SCENARIOS = ("agentx", "inferencex-agentx-mvp")
@@ -183,26 +184,26 @@ def validate(params: dict[str, Any]) -> dict[str, Any]:
     if clean["scenario"] not in SCENARIOS:
         raise ParamError(f"scenario 只能是 {' / '.join(SCENARIOS)}（收到 {clean['scenario']}）")
     if clean["dataset_dir"]:
-        path = Path(clean["dataset_dir"])
+        path = resolve_dataset_dir(clean["dataset_dir"])
         if not path.exists():
-            raise ParamError(f"dataset_dir 不存在：{clean['dataset_dir']}（挂载了吗？）")
+            raise ParamError(
+                f"dataset_dir 对应的目录不存在：{path}"
+                f"（dataset_dir={clean['dataset_dir']}；数据集名按 {DATASET_ROOT}/<名字> 解析，挂载了吗？）"
+            )
         if not path.is_dir():
             raise ParamError(
-                f"dataset_dir 要给 traces.jsonl 的**父目录**，不是文件：{clean['dataset_dir']}"
-                "（例：/data/cc-traces）"
+                f"dataset_dir 要是目录，不是文件：{path}（该目录下应有 {DATASET_JSONL_NAME}）"
             )
         if not (path / DATASET_JSONL_NAME).is_file() and not any(path.glob("*.json")):
             raise ParamError(
                 f"dataset_dir 里既没有 {DATASET_JSONL_NAME}，也没有已拆好的 *.json：{path}"
             )
+        # 拆分要写 <目录>/.agentx-split/：不可写时提前给出明确原因（平台已授予读写权限）
+        if not os.access(path, os.W_OK):
+            raise ParamError(f"dataset_dir 目录不可写（需要在其中生成 .agentx-split/）：{path}")
     elif not clean["public_dataset"]:
         raise ParamError("public_dataset 不能为空（语料身份是可比性的前提）")
 
-    if clean["tokenizer"].startswith("/") and not Path(clean["tokenizer"]).exists():
-        raise ParamError(
-            f"tokenizer 指向的本地路径不存在：{clean['tokenizer']}"
-            "（模型权重目录/分词器目录挂载了吗？也可以用 tokenizer 仓库名或 builtin）"
-        )
     if clean["benchmark_duration_seconds"] < MIN_DURATION_SECONDS and not clean["allow_short_run"]:
         raise ParamError(
             f"benchmark_duration_seconds={clean['benchmark_duration_seconds']} 低于 scenario 下限 "
@@ -214,6 +215,8 @@ def validate(params: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+# 平台把语料根目录挂在容器内的 /data；dataset_dir 只写数据集名，例如 "cc-traces-weka-062126-256k"。
+DATASET_ROOT = Path("/data")
 # 语料文件名；拆好的结果放在 dataset_dir 下的隐藏子目录里（不污染语料目录，也不会被
 # weka_trace loader 的顶层 `*.json` glob 误读）。
 DATASET_JSONL_NAME = "traces.jsonl"
@@ -231,6 +234,18 @@ def _split_cache_key(path: Path) -> dict[str, Any]:
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
     }
+
+
+def resolve_dataset_dir(value: str) -> Path:
+    """dataset_dir 的取值：数据集名（相对 /data）或绝对路径。
+
+    平台把语料根挂到 /data，用户只写名字（如 cc-traces-weka-062126-256k），
+    对应 /data/cc-traces-weka-062126-256k/traces.jsonl；以 / 开头的仍按绝对路径处理
+    （本地调试方便）。
+    """
+    if value.startswith("/"):
+        return Path(value)
+    return DATASET_ROOT / value
 
 
 def prepare_local_dataset(dataset_dir: Path) -> Path:
@@ -350,11 +365,28 @@ def parse_argv(argv: list[str]) -> tuple[str | None, str, str]:
     return params_file, url, model
 
 
+def resolve_tokenizer() -> str:
+    """分词器路径由平台注入的 AG_MODEL_PATH 决定（公共参数，不写进参数文件）。
+
+    - 绝对路径（模型权重或分词器目录）：路径不存在直接判参数错误，避免跑到数据集构建才失败；
+    - `builtin` 或 HF 仓库名：原样透传（builtin 零依赖，仓库名需要 Hub/本地缓存）；
+    - 未注入：返回空串，agentx 会按模型名自行推导（离线环境通常推导不到，建议平台注入）。
+    """
+    value = (os.environ.get("AG_MODEL_PATH") or "").strip()
+    if value.startswith("/") and not Path(value).exists():
+        raise ParamError(
+            f"AG_MODEL_PATH 指向的路径不存在：{value}"
+            "（模型权重目录/分词器目录挂载了吗？也可设为 builtin）"
+        )
+    return value
+
+
 def build_command(
     params: dict[str, Any],
     url: str,
     model: str,
     local_dataset: Path | None = None,
+    tokenizer: str = "",
 ) -> list[str]:
     """把参数映射成 agentx 命令。工具的内部 CLI 规则只活在这里（平台不解析，§5.2）。"""
     cmd = shlex.split(params["agentx_cmd"]) + [
@@ -390,8 +422,8 @@ def build_command(
         cmd += ["--num-dataset-entries", str(params["num_dataset_entries"])]
     if params["max_context_length"]:
         cmd += ["--max-context-length", str(params["max_context_length"])]
-    if params["tokenizer"]:
-        cmd += ["--tokenizer", params["tokenizer"]]
+    if tokenizer:
+        cmd += ["--tokenizer", tokenizer]
     if params["warmup_requests_per_lane"]:
         cmd += ["--warmup-requests-per-lane", str(params["warmup_requests_per_lane"])]
     if params["agentic_cache_warmup_duration"]:
@@ -411,30 +443,40 @@ def build_command(
     return cmd
 
 
-def is_local_tokenizer(tokenizer: str) -> bool:
-    """tokenizer 是否是容器内的本地路径（而不是 HF 仓库名或 builtin）。"""
-    return tokenizer.startswith("/")
+def resolve_cache_dir(param_value: str, env_name: str, default: Path,
+                      label: str) -> tuple[Path, str]:
+    """缓存目录取值顺序：params.jsonl 的参数 > 环境变量 > 缺省（<output>/.cache 下）。
+
+    以前只有缺省值，挂载好的 PVC 只能靠环境变量传；现在参数优先，写 params.jsonl 就能生效。
+    """
+    if param_value:
+        return Path(param_value), f"参数 {label}"
+    if os.environ.get(env_name):
+        return Path(os.environ[env_name]), f"环境变量 {env_name}"
+    return default, "缺省"
 
 
-def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path, bool]:
-    """子进程环境 + 语料缓存目录。
+def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path, Path]:
+    """子进程环境 + 语料/重建缓存目录。
 
     平台只给 /tmp（256MiB，execution §2.1）与输出目录可写，而公共语料是 1.85GB ——
-    缓存只能落到输出目录下的临时子目录，跑完删掉（keep_cache=true 时保留）。
+    缓存缺省落在输出目录下的临时子目录，跑完删掉（keep_cache=true 时保留）；挂载了 PVC 就
+    用 hf_cache_dir / mmap_cache_dir 参数指过去。
     """
     env = dict(os.environ)
     cache_root = OUT / ".cache"
-    hf_dir = Path(params["hf_cache_dir"]) if params["hf_cache_dir"] else cache_root / "hf"
-    mmap_dir = cache_root / "mmap"
-    hf_dir.mkdir(parents=True, exist_ok=True)
-    mmap_dir.mkdir(parents=True, exist_ok=True)
-    # 显式传进来的缓存目录优先（例如挂载的 PVC）：hf_cache_dir 参数最优先，其次是调用方
-    # 自己设的 HF_HOME（常用于挂一个已有 tokenizer 的缓存），都没有才落到 <output>/.cache。
-    if params["hf_cache_dir"]:
-        env["HF_HOME"] = str(hf_dir)
-    else:
-        env.setdefault("HF_HOME", str(hf_dir))
-    env.setdefault("AIPERF_DATASET_MMAP_CACHE_DIR", str(mmap_dir))
+    hf_dir, hf_src = resolve_cache_dir(
+        params["hf_cache_dir"], "HF_HOME", cache_root / "hf", "hf_cache_dir")
+    mmap_dir, mmap_src = resolve_cache_dir(
+        params["mmap_cache_dir"], "AIPERF_DATASET_MMAP_CACHE_DIR", cache_root / "mmap", "mmap_cache_dir")
+    for path, label in ((hf_dir, "HF 缓存"), (mmap_dir, "数据集重建缓存")):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ParamError(f"{label}目录不可创建/不可写：{path}（{exc}）") from exc
+    log(f"HF 缓存：{hf_dir}（来源：{hf_src}）；重建缓存：{mmap_dir}（来源：{mmap_src}）")
+    env["HF_HOME"] = str(hf_dir)
+    env["AIPERF_DATASET_MMAP_CACHE_DIR"] = str(mmap_dir)
     env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     env.setdefault("PYTHONUNBUFFERED", "1")
     # agentx 的冷启动配置窗口默认 300s，重建 393 条 trace 会超；scenario 预设已抬到 1800s，
@@ -442,21 +484,15 @@ def child_env(params: dict[str, Any]) -> tuple[dict[str, str], Path, bool]:
     env.setdefault("AIPERF_DATASET_CONFIGURATION_TIMEOUT", "1800")
     env.setdefault("AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT", "1800")
 
-    # agentx-harness 1.0.7 的离线分支会把 tokenizer 名当 repo id 去 snapshot_download，
-    # 传本地目录会直接 HFValidationError。本地路径本身不需要 Hub，所以这里把 offline 变量
-    # 从子进程环境里摘掉（只影响这次执行），并在 result.json 里留痕。
-    offline_ignored = False
-    if is_local_tokenizer(params["tokenizer"]) and (
-        env.get("HF_HUB_OFFLINE") or env.get("TRANSFORMERS_OFFLINE")
-    ):
-        log(
-            "本地 tokenizer 与 HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE 不兼容"
-            "（agentx 1.0.7 的离线分支会把路径当 repo id），已为本次执行摘掉这两个变量"
-        )
-        env.pop("HF_HUB_OFFLINE", None)
-        env.pop("TRANSFORMERS_OFFLINE", None)
-        offline_ignored = True
-    return env, hf_dir, offline_ignored
+    if params["offline"]:
+        # 明确声明「不许出网」：任何漏掉的 Hub 调用都会立刻失败，而不是静默下载几百 MB。
+        # （典型漏网场景：dataset_dir 走本地语料，但 tokenizer 留空 → 拿模型名去 Hub 解析分词器。）
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
+        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        log("offline=true：已设 HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE，本次执行不会访问 HuggingFace")
+
+    return env, hf_dir, mmap_dir
 
 
 def run_agentx(cmd: list[str], env: dict[str, str], log_path: Path) -> tuple[int, bool]:
@@ -717,17 +753,28 @@ def run(argv: list[str]) -> int:
     local_dataset: Path | None = None
     if params["dataset_dir"]:
         try:
-            local_dataset = prepare_local_dataset(Path(params["dataset_dir"]))
+            local_dataset = prepare_local_dataset(resolve_dataset_dir(params["dataset_dir"]))
         except ParamError as exc:
             emit_failure("VALIDATION_ERROR", str(exc), started, notes="本地语料不可用")
             return 2
 
-    # 3) 调用 agentx
-    env, hf_dir, offline_ignored = child_env(params)
-    cmd = build_command(params, url, model, local_dataset)
+    if not (os.environ.get("AG_MODEL_PATH") or "").strip():
+        log(
+            "提示：未注入 AG_MODEL_PATH —— agentx 会拿模型名去 HuggingFace 解析分词器（离线会失败）。"
+            "离线请由平台注入 AG_MODEL_PATH（如 /models/Qwen3-32B），或设 AG_MODEL_PATH=builtin。"
+        )
+
+    # 3) 调用 agentx（tokenizer 来自平台注入的 AG_MODEL_PATH）
+    try:
+        tokenizer = resolve_tokenizer()
+    except ParamError as exc:
+        emit_failure("VALIDATION_ERROR", str(exc), started, notes="模型路径不可用")
+        return 2
+    env, hf_dir, mmap_dir = child_env(params)
+    cmd = build_command(params, url, model, local_dataset, tokenizer)
     # 命令里只有 ${ENDPOINT_API_KEY} 引用形态的密钥，可以安全落日志。
     log("命令：" + " ".join(shlex.quote(part) for part in cmd))
-    log(f"HF 缓存：{hf_dir}；mmap 缓存：{env['AIPERF_DATASET_MMAP_CACHE_DIR']}")
+    log(f"实际使用：HF_HOME={env['HF_HOME']}，AIPERF_DATASET_MMAP_CACHE_DIR={env['AIPERF_DATASET_MMAP_CACHE_DIR']}")
 
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     try:
@@ -786,14 +833,15 @@ def run(argv: list[str]) -> int:
     }
     if params["dataset_dir"]:
         payload["workload"]["dataset_dir"] = params["dataset_dir"]
+        payload["workload"]["dataset_path"] = str(resolve_dataset_dir(params["dataset_dir"]))
     else:
         payload["workload"]["public_dataset"] = params["public_dataset"]
     if params["num_dataset_entries"]:
         payload["workload"]["num_dataset_entries"] = params["num_dataset_entries"]
     if params["max_context_length"]:
         payload["workload"]["max_context_length"] = params["max_context_length"]
-    if params["tokenizer"]:
-        payload["workload"]["tokenizer"] = params["tokenizer"]
+    if tokenizer:
+        payload["workload"]["tokenizer"] = tokenizer
     meta = export.get("metadata") if isinstance(export.get("metadata"), dict) else {}
     payload["metadata"] = {
         "tool": "agentx-harness",
@@ -802,15 +850,10 @@ def run(argv: list[str]) -> int:
         "submission_valid": meta.get("submission_valid"),
         "submission_invalid_reasons": meta.get("submission_invalid_reasons") or [],
         "hf_cache_dir": str(hf_dir),
+        "mmap_cache_dir": str(mmap_dir),
         "dataset_cache_kept": bool(params["keep_cache"]),
-        "hf_offline_ignored": offline_ignored,
         "command": " ".join(shlex.quote(part) for part in cmd),
     }
-    if offline_ignored:
-        transcript.append(
-            "本次执行已临时摘掉 HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE：本地 tokenizer 路径在 "
-            "agentx-harness 1.0.7 的离线分支里会被当成 repo id"
-        )
     payload["notes"] = build_notes(export, params, transcript)
     write_result(payload)
 

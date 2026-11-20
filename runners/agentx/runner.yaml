@@ -1,5 +1,5 @@
 name: agentx
-version: 1.0.5
+version: 1.0.6
 display_name: AgentX 长上下文 agentic 压测
 description: |
   用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（Weka，393 条真实 Claude Code
@@ -31,7 +31,7 @@ entry: ["/runner/run.sh"]
 input_format: jsonl
 
 # 镜像由 CI 构建产出（见 build/Dockerfile 与 README 的构建节）。平台与任何运行环境都不 build（§6.2）。
-image: registry.dev.huawei.com/argus/agentx:1.0.5
+image: registry.dev.huawei.com/argus/agentx:1.0.6
 
 resources:
   # 冷启动阶段要下载 1.85GB 语料并把 393 条 trace 重建为 tokenized 数据集（按 CPU 数并行），
@@ -147,9 +147,8 @@ parameters:
       - `builtin`：tiktoken o200k_base，零依赖（镜像内已预缓存），但**不是**服务端模型的分词器，
         只适合冒烟；用本地 tokenizer 时不需要镜像里的这份词表。
       留空则按 AG_SERVED_MODEL_NAME 推导——服务端用内部别名（不是可解析的 HF 仓库）时会失败。
-      注意：传本地路径时**不要设 `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`**——agentx-harness 1.0.7
-      的离线分支会把路径当 repo id 去查缓存并报 `HFValidationError`。本 Runner 检测到这个组合会
-      为本次执行摘掉这两个变量并打警告（结果里 metadata.hf_offline_ignored=true）。
+      镜像默认 agentx-harness **1.0.14**：本地路径与 `HF_HUB_OFFLINE` 兼容（旧版 1.0.7 的离线分支
+      会把路径当 repo id 报 `HFValidationError`，已在该版本之后修掉）。
     example: /models/Qwen3-32B
 
   - name: scenario

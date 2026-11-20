@@ -7,7 +7,7 @@
 
 - 角色 `test`，`on_failure: continue`（跑完即出指标，不终止 Task，§7.3 / §7.4）
 - 入口 `/runner/run.sh`，契约见 [ARCHITECTURE.md](../../design/ARCHITECTURE.md) §5.2–§5.12、附录 A
-- 镜像 `registry.dev.huawei.com/argus/agentx:1.0.5`（约 1 GB）
+- 镜像 `registry.dev.huawei.com/argus/agentx:1.0.6`（约 1 GB）
 
 ## 目录结构
 
@@ -94,7 +94,7 @@ docker run --rm \
   -v /host/weights/Qwen3-32B:/models/Qwen3-32B:ro \
   -v /tmp/out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
-  registry.dev.huawei.com/argus/agentx:1.0.5 \
+  registry.dev.huawei.com/argus/agentx:1.0.6 \
   /runner/run.sh --url http://10.0.0.10:8000/v1 --model_name Qwen3-32B
 ```
 
@@ -120,9 +120,8 @@ Runner 在 `dataset_dir` 下按顺序找语料：
 - `tokenizer` 三种写法：**容器内绝对路径**（生产推荐，如 `-v /host/weights/Qwen3-32B:/models/Qwen3-32B:ro`
   + `"tokenizer":"/models/Qwen3-32B"`）、HF 仓库名（配 `-e HF_HOME` 指到已缓存目录）、
   `builtin`（tiktoken 零依赖，仅冒烟用）。本地路径不存在会在参数预检阶段直接失败。
-- **用本地 tokenizer 时不要加 `-e HF_HUB_OFFLINE=1`**：agentx-harness 1.0.7 的离线分支会把路径当
-  repo id 去查缓存（`HFValidationError`）。Runner 检测到「本地路径 + 该变量」会为本次执行摘掉它并
-  打警告，`metadata.hf_offline_ignored=true` 留痕——但还是建议直接不设。
+- 镜像默认 agentx-harness **1.0.14**（`--build-arg AGENTX_VERSION=` 可覆盖）；本地 tokenizer 路径与
+  `HF_HUB_OFFLINE` 兼容（1.0.7 的离线分支会把路径当 repo id，已在新版修掉）。
 - 镜像里那份 tiktoken 词表只服务 `builtin`：构建时下载不到只会打警告，不影响传本地路径；
   确定不用 builtin 就 `--build-arg TIKTOKEN_CACHE=0` 跳过下载。
 - 平台内：Execution Profile 把语料 PVC 挂到 `/data/cc-traces`（可写）；`/tmp` 只有 256 MiB，别放那儿。
@@ -202,7 +201,7 @@ DATASET_DIR=~/code/cc-traces-weka-062126 ./run-local.sh --url=http://10.0.0.10:8
 
 ```bash
 cd runners/agentx
-TAG=1.0.5
+TAG=1.0.6
 docker build -f build/Dockerfile -t registry.dev.huawei.com/argus/agentx:${TAG} .   # 国内/离线加下面的 build-arg
 #   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.13-slim
 #   --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
@@ -222,7 +221,7 @@ docker run --rm agentx-runner:stub                        # 容器内冒烟（st
 ```
 
 1. `runner.yaml` 对照 `runners/mock-deploy`；`placeholder` 单行合法 JSONL（`tests/test_runner_yaml.py` 守）。
-2. 重启 argusd → `GET /api/v1/runners` 出现 `agentx@1.0.5`（K-3：启动期扫描，无运行时注册）。
+2. 重启 argusd → `GET /api/v1/runners` 出现 `agentx@1.0.6`（K-3：启动期扫描，无运行时注册）。
 3. `POST /tasks?dry_run=true` 过 → 小参数真提交（短跑 + 小语料）→ 看 `logs/` 与 `result.json`。
 
 > 内容一变就必须升 `version`（含 description / placeholder / display_name），否则同版本不同内容会
