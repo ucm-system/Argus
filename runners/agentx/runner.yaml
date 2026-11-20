@@ -1,5 +1,5 @@
 name: agentx
-version: 1.0.11
+version: 1.0.14
 display_name: AgentX 长上下文 agentic 压测
 description: |
   用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（393 条 Claude Code 会话，含
@@ -17,7 +17,7 @@ role: test
 on_failure: continue
 entry: ["/runner/run.sh"]
 input_format: jsonl
-image: registry.dev.huawei.com/argus/agentx:1.0.11
+image: registry.dev.huawei.com/argus/agentx:1.0.14
 
 resources:
   cpu: "4"

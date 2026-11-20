@@ -47,10 +47,42 @@ RUN set -eux; \
 #     根本不需要它；
 #   * 想彻底跳过这次下载：`--build-arg TIKTOKEN_CACHE=0`（离线/可复现构建推荐）。
 ARG TIKTOKEN_CACHE=1
+
+# aiperf server-metrics /v1 修复补丁（上游 agentx-harness 在 agentx-v1.0.14 出的）。
+#
+# 问题：`--url` 给的是 OpenAI 风格 base（`http://host:8000/v1`）时，aiperf 的自动发现拼出
+#   `http://host:8000/v1/metrics` → 404 → 日志只有 "no Prometheus endpoints reachable"，
+#   server metrics 静默关闭，实际拿不到指标。
+# 补丁做两件事：1) 归一化时丢掉尾部 API 版本段（`/v1`、`/v2`…），serving prefix 保留；
+#              2) 推导路径仍非 200 时回退探测一次 origin-root `/metrics`，并把 HTTP 状态
+#                 写进 disabled 原因（`<url> (HTTP 404)`）。
+#
+# 补丁按 **上游仓库布局**（`a/src/aiperf/...`）编写，而 wheel 里只有 `src/` 的内容，
+# 且 docs/ 与 tests/ 不进镜像——所以先用 awk 抽出 `src/aiperf/` 的 hunk，再 `patch -p2`
+# 落到 site-packages。补丁打不上会让构建**失败**（含 ``*.orig/*.rej`` 残留检查与行为断言）。
+#
+# agentx-harness 升到已内置该修复的版本后，用 `--build-arg APPLY_METRICS_PATCH=0` 关掉。
+ARG APPLY_METRICS_PATCH=1
+COPY build/aiperf-server-metrics-v1-url-fix.patch /tmp/
+
 RUN set -eux; \
     pip install --index-url "${PIP_INDEX_URL}" "agentx-harness==${AGENTX_VERSION}"; \
-    if [ -n "${PRUNE}" ]; then pip uninstall -y ${PRUNE}; fi; \
     SP=/usr/local/lib/python3.13/site-packages; \
+    if [ "${APPLY_METRICS_PATCH}" = "1" ]; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends patch; \
+      awk '/^diff --git /{ keep = ($0 ~ /^diff --git a\/src\/aiperf\//) } keep' \
+          /tmp/aiperf-server-metrics-v1-url-fix.patch > /tmp/aiperf-metrics-src.patch; \
+      test -s /tmp/aiperf-metrics-src.patch; \
+      patch -p2 -t -N --no-backup-if-mismatch -d "${SP}" -i /tmp/aiperf-metrics-src.patch; \
+      test -z "$(find "${SP}/aiperf" -name '*.orig' -o -name '*.rej')"; \
+      python -c "from aiperf.common.metric_utils import normalize_metrics_endpoint_url as n; assert n('http://h:8000/v1') == 'http://h:8000/metrics', n('http://h:8000/v1'); import aiperf.server_metrics.data_collector as d; assert hasattr(d.ServerMetricsDataCollector, '_probe_root_metrics')"; \
+      rm -f /tmp/aiperf-metrics-src.patch /tmp/aiperf-server-metrics-v1-url-fix.patch; \
+      apt-get purge -y patch; \
+      apt-get autoremove -y; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    if [ -n "${PRUNE}" ]; then pip uninstall -y ${PRUNE}; fi; \
     find "${SP}" -type d -name __pycache__ -prune -exec rm -rf {} +; \
     find "${SP}" -maxdepth 3 -type d -name tests -prune -exec rm -rf {} +; \
     rm -rf "${SP}"/pip "${SP}"/pip-*.dist-info "${SP}"/setuptools "${SP}"/setuptools-*.dist-info "${SP}"/pkg_resources; \
