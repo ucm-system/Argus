@@ -1,65 +1,36 @@
 name: agentx
-version: 1.0.6
+version: 1.0.11
 display_name: AgentX 长上下文 agentic 压测
 description: |
-  用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（Weka，393 条真实 Claude Code
-  会话，含 subagent 分支）对被测服务做多轮回放压测：按录制的时间间隔重放每一轮请求、保留会话
-  前缀以复用服务端 KV cache，输出 TTFT / ITL / 端到端时延 / token 吞吐与前缀缓存命中率。
-  只回答「这套服务在真实 agentic 负载下表现如何」；是否达标由下游消费指标判断。
+  用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（393 条 Claude Code 会话，含
+  subagent 分支，约 1.85GB）回放压测被测服务：按录制的时间间隔重放每一轮请求、保留会话前缀以
+  复用服务端 KV cache，输出 TTFT / ITL / 端到端时延 / token 吞吐与前缀缓存命中率。
 
-  语料与 tokenizer 由本 Runner 自行准备：默认从 HuggingFace 公开仓库
-  semianalysisai/cc-traces-weka-062126 拉取（单文件 1.85GB），再用 `--tokenizer` 指定的
-  tokenizer 重建每条 trace。首次运行包含下载 + 重建，冷启动明显慢于 benchmark 时长本身。
-  输入要点：url / model_name 不在输入文件里——由平台以 AG_SERVED_URL / AG_SERVED_MODEL_NAME
-  注入；`tokenizer` 缺省按模型名推导，服务端用了内部别名（不是可解析的 HF 仓库）时必须显式给。
+  被测服务地址、模型名与分词器是公共参数，由平台注入，不写进输入文件：
+  AG_SERVED_URL / AG_SERVED_MODEL_NAME / AG_MODEL_PATH。分词器通常指向容器内的模型权重
+  或分词器目录（如 /models/Qwen3-32B）；不注入时按模型名向 HuggingFace 推导，离线环境会失败。
 
-  1.0.2 的设计取舍：
-  - 语料必须可追溯：默认用 date-pinned 别名（semianalysis_cc_traces_weka_062126），滚动别名
-    （..._with_subagents）会随语料更新而变，两次运行不可比；
-  - `benchmark_duration_seconds` 低于 scenario 下限 900 秒时**直接判参数错误**（退出码 2），
-    要跑短冒烟必须显式打开 `allow_short_run`，此时结果带 submission_valid=false；
-  - 平台 `/tmp` 只有 256MiB，装不下 1.85GB 语料，所以 HF 与 mmap 缓存默认落在输出目录下的
-    `.cache/`，跑完即删（`keep_cache=true` 可保留，用于排查）。
+  语料默认取公开数据集，需要能访问 HuggingFace；离线运行请用 dataset_dir 指向本地语料目录，
+  并打开 offline=true。首次运行包含语料下载与 token 化重建，冷启动明显慢于 benchmark 时长本身。
 
 role: test
-
-# 单个测试失败不该终止整个 Task（§7.3）：是否继续由提交者用 runners[].on_failure 决定；
-# 只有 Pre-Check（endpoint-probe）才 abort_task。
 on_failure: continue
-
 entry: ["/runner/run.sh"]
 input_format: jsonl
-
-# 镜像由 CI 构建产出（见 build/Dockerfile 与 README 的构建节）。平台与任何运行环境都不 build（§6.2）。
-image: registry.dev.huawei.com/argus/agentx:1.0.6
+image: registry.dev.huawei.com/argus/agentx:1.0.11
 
 resources:
-  # 冷启动阶段要下载 1.85GB 语料并把 393 条 trace 重建为 tokenized 数据集（按 CPU 数并行），
-  # 之后才进入 warmup / profiling。2c/2Gi 重建会明显变慢，4c/8Gi 是实测够用的档位。
   cpu: "4"
   memory: "8Gi"
   gpu: { resource: nvidia.com/gpu, count: 0 }
 
-# 必须独占该服务（§6.7）：agentic 回放会持续打满目标服务，与任何其他测量并行都会互相污染
-# （吞吐被摊薄、前缀缓存被别的流量冲刷，命中率与延迟都不可用）。
 concurrency:
   endpoint_exclusive: true
 
-# 语料与权重都不由平台托管（§10.4）。要复用跨 attempt 的语料缓存，用 Execution Profile 挂一块
-# 可写 PVC，把 `hf_cache_dir` 指过去；不挂就用输出目录下的临时目录（跑完删除）。
 mounts: []
-
-# 本 Runner 不产出下游 key（测试类 Runner 通常为空，§5.12）。
 exports: []
-# 被测服务地址与模型名由平台以公共参数环境变量注入（§5.4.1）：
-#   AG_SERVED_URL / AG_SERVED_MODEL_NAME（外接模式来自 Manifest service 块，部署模式来自 deploy 导出）。
 consumes: [AG_SERVED_URL, AG_SERVED_MODEL_NAME]
 
-# 业务参数 schema（jsonl，§5.4）：平台校验类型与 required 存在性；
-# 范围/枚举/跨字段语义归本 Runner。
-# url / model_name 是公共参数（§5.4.1），走 AG_SERVED_URL / AG_SERVED_MODEL_NAME，**不进参数文件**。
-
-# placeholder 必须与 input_format 同格式（D-67）：jsonl = 单行完整 JSON 对象。
 placeholder: '{"concurrency":8,"benchmark_duration_seconds":1800,"public_dataset":"semianalysis_cc_traces_weka_062126","random_seed":42}'
 
 parameters:
@@ -68,97 +39,66 @@ parameters:
     required: false
     default: 8
     description: |
-      并发会话树数量（scenario 下必须是单个整数）。这是「同时活着的 session tree」上限：
-      subagent 分支并行时在飞请求数可以超过它，但树数恒定。生产压测一般 8~64；
-      超过语料里可用 trace 数时依赖 scenario 锁定的 cache-bust 规则回绕。
+      并发会话树数量（subagent 分支并行时在飞请求数可超过它）。生产压测推荐 8~64。
 
   - name: benchmark_duration_seconds
     type: integer
     required: false
     default: 1800
     description: |
-      测量时长（秒）。scenario 下限 900，低于它必须同时把 allow_short_run 设为 true
-      （此时结果 submission_valid=false，只可用于冒烟/消融）。稳态需要时间，短跑是噪声。
+      测量时长（秒）。scenario 下限 900 秒，低于它需同时打开 allow_short_run。
+      正式对比推荐 1800，需要更长稳态时用 3600。
 
   - name: public_dataset
     type: string
     required: false
     default: semianalysis_cc_traces_weka_062126
     description: |
-      Weka agentic trace 语料别名。默认 date-pinned 的 semianalysis_cc_traces_weka_062126
-      （393 条 with-subagents 会话，1.85GB，HuggingFace 公开无鉴权）。
-      滚动别名 semanalsis_cc_traces_weka_with_subagents 会随新语料变化，两次运行不可比；
-      `_256k` 变体会预丢单请求超 256k token 的 trace，上下文窗口约 256k 的服务用它。
+      Weka agentic trace 语料别名。推荐保持默认的 date-pinned 别名
+      semianalysis_cc_traces_weka_062126（393 条会话，1.85GB，公开无鉴权）；
+      上下文窗口约 256k 的服务用 _256k 变体。滚动别名会随语料更新而变化，两次运行不可比。
 
   - name: dataset_dir
     type: string
     required: false
     default: ""
     description: |
-      本地语料目录（**离线用**）：给 `traces.jsonl` 的**父目录**（例：`/data/cc-traces`），不是文件路径。
-      Runner 在这个目录下找语料，识别顺序：
-
-      - 顶层已有「一条 trace 一个 `*.json`」→ 认为已拆好，直接用它；
-      - 只有 `traces.jsonl` → 拆到 `<dataset_dir>/.agentx-split/` 再跑。拆分只付一次：下一次运行
-        校验该目录里的 `manifest`（源文件路径 + size + mtime + 拆分版本 + 条数），命中就跳过拆分；
-        源文件被替换/重新下载或拆分逻辑升级 → 自动重拆。
-
-      所以语料目录必须**可写**（挂 `:ro` 会在拆分时失败）；只想读挂载就预先在该目录下放好拆好的
-      `*.json`。设置后走 `--custom-dataset-type weka_trace --input-file`，**不再使用 public_dataset**，
-      并强制 `--unsafe-override`：scenario 的「必须钉住公开语料」规则被放行，结果固定
-      `submission_valid=false`，不可与公开语料的运行比较。记得显式给 `tokenizer`。
-    example: /data/cc-traces
+      本地语料目录（离线用）：写数据集名（相对平台挂载的 /data，如 cc-traces）或绝对路径，
+      指向 traces.jsonl 的父目录而不是文件本身。目录需可写（Runner 会在其中生成 .agentx-split/）；
+      只想只读挂载就预先放好拆好的 *.json。设置后不再使用 public_dataset，结果固定
+      submission_valid=false，不可与公开语料的运行比较。
+    example: cc-traces
 
   - name: num_dataset_entries
     type: integer
     required: false
     default: 0
     description: |
-      只保留语料前 N 条（按 max_context_length 过滤后取，0 = 全量 393 条）。
-      仅用于冒烟：它改变被回放的工作负载而 scenario 不会拒绝，结果仍会盖章 submission_valid=true，
-      因此**不要**用它跑要对比或提交的数据。
+      只回放语料前 N 条 trace，0 = 全量 393 条。仅用于冒烟，不要用于需要对比或提交的数据。
 
   - name: max_context_length
     type: integer
     required: false
     default: 0
     description: |
-      客户端侧上下文过滤：丢掉「输入 + 该轮 max_tokens」超过该 token 数的 trace，0 = 不过滤。
-      填被测服务真实的最大上下文（例如 128000）；不填则超长 trace 由服务端报错，计入
-      context_overflow 比率（超过 1% 会判 submission_valid=false）。
+      客户端上下文过滤：丢掉超过该 token 数的 trace，0 = 不过滤。
+      推荐填被测服务真实的最大上下文，例如 128000。
 
   - name: random_seed
     type: integer
     required: false
     default: 42
     description: |
-      随机种子。决定每条 lane 的起始 turn 与回绕顺序，也作为 mmap 数据集缓存的 key 之一；
-      固定它才能复现，也才能命中上一次运行留下的数据集缓存。
-
-  - name: tokenizer
-    type: string
-    required: false
-    default: ""
-    description: |
-      分词器来源，三种写法：
-      - **容器内绝对路径**（推荐，生产常态）：模型权重目录或分词器目录，如 `/models/Qwen3-32B`，
-        由挂载提供；路径不存在会在参数预检阶段直接失败（退出码 2），不会跑到一半才报错。
-      - HF tokenizer 仓库名（如 `Qwen/Qwen3-32B`）：需要能访问 Hub 或 `HF_HOME` 里已有缓存。
-      - `builtin`：tiktoken o200k_base，零依赖（镜像内已预缓存），但**不是**服务端模型的分词器，
-        只适合冒烟；用本地 tokenizer 时不需要镜像里的这份词表。
-      留空则按 AG_SERVED_MODEL_NAME 推导——服务端用内部别名（不是可解析的 HF 仓库）时会失败。
-      镜像默认 agentx-harness **1.0.14**：本地路径与 `HF_HUB_OFFLINE` 兼容（旧版 1.0.7 的离线分支
-      会把路径当 repo id 报 `HFValidationError`，已在该版本之后修掉）。
-    example: /models/Qwen3-32B
+      随机种子，决定每条 lane 的起始 turn 与回绕顺序，也是数据集重建缓存的 key。
+      需要复现或复用上次缓存时保持默认 42。
 
   - name: scenario
     type: string
     required: false
     default: agentx
     description: |
-      AgentX 场景标识，二选一：agentx（InferenceX 默认：3600s 时长、0~100% 起始窗口）
-      或 inferencex-agentx-mvp（旧 MVP 默认：1800s、25%~75% 起始窗口）。
-      两者锁定的规则相同但默认时长不同，结果不可直接比较。
+      AgentX 场景：agentx（默认，3600 秒时长、0~100% 起始窗口）或
+      inferencex-agentx-mvp（1800 秒、25%~75% 起始窗口）。两者的结果不可直接比较。
     example: agentx
 
   - name: warmup_requests_per_lane
@@ -166,70 +106,83 @@ parameters:
     required: false
     default: 0
     description: |
-      每个并发 lane 在必做快照预热之后额外发的预热请求数（确定性缓存预热），0 = 用 scenario 默认。
-      与 agentic_cache_warmup_duration 互斥，两个都给会被工具拒绝。
+      每个并发 lane 额外的预热请求数，0 = 用 scenario 默认。与 agentic_cache_warmup_duration 互斥。
 
   - name: agentic_cache_warmup_duration
     type: integer
     required: false
     default: 0
     description: |
-      时长制缓存预热（秒）：预热阶段只发单 token 请求持续该时长，把服务端 KV cache 压到稳态后再
-      开始测量。0 = 关闭。与 warmup_requests_per_lane 互斥。
+      时长制缓存预热（秒），0 = 关闭。与 warmup_requests_per_lane 互斥。
 
   - name: allow_short_run
     type: boolean
     required: false
     default: false
     description: |
-      允许 benchmark_duration_seconds < 900（对齐 --unsafe-override）。打开后结果固定
-      submission_valid=false，仅用于冒烟与消融，不可与要对比/提交的数据混用。
+      放行 benchmark_duration_seconds < 900 的短跑，结果固定 submission_valid=false。
+      仅用于冒烟与消融，不要用于需要对比的数据。
+
+  - name: offline
+    type: boolean
+    required: false
+    default: true
+    description: |
+      完全不出网：true 时任何 HuggingFace 访问都会立刻失败。
+      离线运行（本地语料 + 本地分词器）推荐打开。
 
   - name: hf_cache_dir
     type: string
     required: false
     default: ""
     description: |
-      语料与 tokenizer 的 HF 缓存目录（可写）。缺省 <output>/.cache/hf，跑完删除。
-      跨 attempt 复用 1.85GB 语料时把它指到 Execution Profile 挂载的可写 PVC 上。
+      HuggingFace 缓存目录（可写）。缺省 <output>/.cache/hf，跑完删除；
+      想跨 attempt 复用 1.85GB 语料时指向可写 PVC。
     example: /data/agentx-hf
+
+  - name: mmap_cache_dir
+    type: string
+    required: false
+    default: ""
+    description: |
+      数据集重建缓存目录（可写）。缺省 <output>/.cache/mmap，跑完删除；
+      想跨 attempt 复用重建结果时指向可写 PVC。
+    example: /data/agentx-mmap
 
   - name: keep_cache
     type: boolean
     required: false
     default: false
     description: |
-      true = 保留 <output>/.cache（默认删除）。注意产物配额：保留会把约 2GB 缓存算进
-      attempt 产物（§8.3），只在排查问题时用。
+      保留 <output>/.cache（默认删除）。仅排查问题时打开：约 2GB 缓存会计入 attempt 产物。
 
   - name: agentx_cmd
     type: string
     required: false
     default: agentx
     description: |
-      替换 agentx 命令（可带参数，按 shell 解析）。默认 agentx（镜像内自带 agentx-harness）。
-      离线回归填 /runner/tests/stub_agentx.py（tests/Dockerfile.stub 构建的测试镜像里）。
+      替换 agentx 命令，默认用镜像自带的 agentx。
+      离线回归填：python3 /runner/tests/stub_agentx.py
 
   - name: extra_args
     type: string
     required: false
     default: ""
     description: |
-      追加到 agentx profile 末尾的原始参数串（按 shell 解析）。用于透传本 Runner 未建模的开关，
-      例如 "--use-server-token-count"。本 Runner 已固定 --ui none，不要在这里覆盖。
+      追加到 agentx profile 末尾的原始参数串，例如 "--use-server-token-count"。
+      不要用它覆盖 --ui 与 --tokenizer。
 
-# 运行期读取的环境变量（§12.4）：声明不是绑定；值由任务级 secrets 注入。
 env:
   ENDPOINT_API_KEY:
     required: false
     secret: true
-    description: "Bearer token。本 Runner 以 --api-key '${ENDPOINT_API_KEY}' 的形式传引用，明文不进 argv、不落日志（§12.4）。"
+    description: "Bearer token。以 --api-key '${ENDPOINT_API_KEY}' 的引用形式传入，明文不进 argv、不落日志。"
   HF_TOKEN:
     required: false
     secret: true
-    description: "HuggingFace 访问令牌：gated tokenizer 仓库或私有语料镜像需要；公开语料与 tokenizer 可不填。"
+    description: "HuggingFace 访问令牌。gated 仓库或私有语料镜像需要，公开语料与本地分词器可不填。"
   HF_ENDPOINT:
     required: false
     secret: false
     default: "https://huggingface.co"
-    description: "HuggingFace 端点；内网镜像（如 https://hf-mirror.example.com）时覆盖，语料与 tokenizer 都走它。"
+    description: "HuggingFace 端点。内网镜像时覆盖，例如 https://hf-mirror.example.com。"

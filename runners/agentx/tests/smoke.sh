@@ -109,6 +109,14 @@ AG_OUTPUT_DIR="${WORK}/out-bad" bash "${RUNNER_DIR}/run.sh" --params-file "${WOR
   --url=http://127.0.0.1:8000/v1 --model_name=mock-llm >/dev/null 2>&1
 [ $? -eq 2 ] && pass "输入文件缺失 → 退出码 2" || fail "输入文件缺失没有返回 2"
 
+# 公共参数（url / model_name / model_path）不进输入文件（§5.4.1）：写 tokenizer 会被当未声明字段拒绝
+BAD_PARAMS="${WORK}/bad-public-param.jsonl"
+echo '{"tokenizer":"/models/gpt2"}' > "${BAD_PARAMS}"
+AG_OUTPUT_DIR="${WORK}/out-bad-param" bash "${RUNNER_DIR}/run.sh" --params-file "${BAD_PARAMS}" \
+  --url=http://127.0.0.1:8000/v1 --model_name=mock-llm >/dev/null 2>&1
+[ $? -eq 2 ] && pass "参数文件里写公共参数（tokenizer）→ 退出码 2" \
+  || fail "参数文件里写公共参数没有被拒（应退出 2）"
+
 # agentx 失败 → 退出码 1 + 错误码（取消/失败都要留下可读结果，§5.9）
 OUT_FAIL="${WORK}/out-fail"
 STUB_EXIT=1 AG_OUTPUT_DIR="${OUT_FAIL}" bash "${RUNNER_DIR}/run.sh" --params-file "${PARAMS}" \

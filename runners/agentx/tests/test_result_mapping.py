@@ -102,6 +102,35 @@ def read_result() -> dict:
     return json.loads((OUT_DIR / "result.json").read_text(encoding="utf-8"))
 
 
+def _with_env(name: str, value: str, fn):
+    """临时设一个环境变量再调用 fn()：公共参数（AG_MODEL_PATH 等）只从环境里读。"""
+    previous = os.environ.get(name)
+    os.environ[name] = value
+    try:
+        return fn()
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
+_scratch_seq = 0
+
+
+def scratch_subdir(prefix: str) -> Path:
+    """在 OUT_DIR 下建一个普通子目录。
+
+    不用 ``tempfile.mkdtemp(dir=...)``：Windows 上它用 0o700 建目录，受限令牌（CI 容器 /
+    沙箱）跑测试时该目录随后不可写，后续用例会莫名其妙地 PermissionError。
+    """
+    global _scratch_seq
+    _scratch_seq += 1
+    path = OUT_DIR / f"{prefix}{_scratch_seq}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 # --- 1. 参数语义 -------------------------------------------------------------
 
 check("默认参数可用", runner.validate(params())["concurrency"] == 8)
@@ -121,29 +150,78 @@ expect_param_error(
 )
 expect_param_error("空语料名被拒", lambda: runner.validate(params(public_dataset=" ")))
 
-check("tokenizer=builtin 通过", runner.validate(params(tokenizer="builtin"))["tokenizer"] == "builtin")
-check("tokenizer=仓库名 通过", runner.validate(params(tokenizer="Qwen/Qwen3-32B"))["tokenizer"] == "Qwen/Qwen3-32B")
+# 分词器不是业务参数，而是公共参数 AG_MODEL_PATH（§5.4.1）：写进参数文件会被当未声明字段拒绝。
+check(
+    "tokenizer 不是业务参数（不进 parameters）",
+    "tokenizer" not in runner.DEFAULTS,
+)
+_tokenizer_file = OUT_DIR / "with-tokenizer.jsonl"
+_tokenizer_file.write_text('{"tokenizer": "/models/gpt2"}\n', encoding="utf-8")
 expect_param_error(
-    "tokenizer 本地路径不存在被拒",
-    lambda: runner.validate(params(tokenizer="/models/does-not-exist")),
+    "参数文件里写 tokenizer 被拒（公共参数不进输入文件）",
+    lambda: runner.load_params(str(_tokenizer_file)),
 )
 
+_saved_model_path = os.environ.pop("AG_MODEL_PATH", None)
+try:
+    check("未注入 AG_MODEL_PATH → 空分词器（交给 agentx 推导）", runner.resolve_tokenizer() == "")
+    check("AG_MODEL_PATH=builtin 原样透传", _with_env("AG_MODEL_PATH", "builtin", runner.resolve_tokenizer) == "builtin")
+    check(
+        "AG_MODEL_PATH=HF 仓库名 原样透传",
+        _with_env("AG_MODEL_PATH", "Qwen/Qwen3-32B", runner.resolve_tokenizer) == "Qwen/Qwen3-32B",
+    )
+    tokenizer_dir = scratch_subdir("tok-")
+    check(
+        "AG_MODEL_PATH 指向的本地目录被接受",
+        _with_env("AG_MODEL_PATH", str(tokenizer_dir), runner.resolve_tokenizer) == str(tokenizer_dir),
+    )
+    expect_param_error(
+        "AG_MODEL_PATH 指向不存在的绝对路径被拒",
+        lambda: _with_env(
+            "AG_MODEL_PATH",
+            "/models/does-not-exist",
+            runner.resolve_tokenizer,
+        ),
+    )
+finally:
+    if _saved_model_path is None:
+        os.environ.pop("AG_MODEL_PATH", None)
+    else:
+        os.environ["AG_MODEL_PATH"] = _saved_model_path
+
 expect_param_error("dataset_dir 不存在被拒", lambda: runner.validate(params(dataset_dir="/nope/missing")))
-file_like = Path(tempfile.mkdtemp(dir=str(OUT_DIR), prefix="f-")) / "traces.jsonl"
+file_like = scratch_subdir("f-") / "traces.jsonl"
 file_like.write_text("{}\n", encoding="utf-8")
 expect_param_error(
     "dataset_dir 给文件被拒（要父目录）",
     lambda: runner.validate(params(dataset_dir=str(file_like))),
 )
-empty_dir = Path(tempfile.mkdtemp(dir=str(OUT_DIR), prefix="e-"))
+empty_dir = scratch_subdir("e-")
 expect_param_error(
     "dataset_dir 既无 traces.jsonl 也无 *.json 被拒",
     lambda: runner.validate(params(dataset_dir=str(empty_dir))),
 )
 
-env_local, hf_dir_local = runner.child_env(params(tokenizer="/models/gpt2"))
+# child_env 返回 (env, hf_dir, mmap_dir)：缓存目录取值优先级 参数 > 环境变量 > 缺省。
+env_local, hf_dir_local, mmap_dir_local = runner.child_env(params())
 check("child_env 设置 HF_HOME", env_local.get("HF_HOME") == str(hf_dir_local))
-check("child_env 设置 mmap 缓存", bool(env_local.get("AIPERF_DATASET_MMAP_CACHE_DIR")))
+check("child_env 设置 mmap 缓存", env_local.get("AIPERF_DATASET_MMAP_CACHE_DIR") == str(mmap_dir_local))
+check("缓存缺省落在 <output>/.cache 下", hf_dir_local == OUT_DIR / ".cache" / "hf"
+      and mmap_dir_local == OUT_DIR / ".cache" / "mmap")
+check("默认不设 HF_HUB_OFFLINE", env_local.get("HF_HUB_OFFLINE") is None)
+
+env_offline, _, _ = runner.child_env(params(offline=True))
+check("offline=true 设 HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE",
+      env_offline.get("HF_HUB_OFFLINE") == "1" and env_offline.get("TRANSFORMERS_OFFLINE") == "1")
+
+custom_hf = OUT_DIR / "custom-hf"
+custom_mmap = OUT_DIR / "custom-mmap"
+env_custom, hf_custom, mmap_custom = runner.child_env(
+    params(hf_cache_dir=str(custom_hf), mmap_cache_dir=str(custom_mmap)))
+check("hf_cache_dir/mmap_cache_dir 参数生效",
+      hf_custom == custom_hf and mmap_custom == custom_mmap
+      and env_custom["HF_HOME"] == str(custom_hf)
+      and env_custom["AIPERF_DATASET_MMAP_CACHE_DIR"] == str(custom_mmap))
 
 # --- 2. 输入文件解析（§5.3 / §5.4） -----------------------------------------
 

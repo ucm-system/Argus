@@ -65,6 +65,14 @@ def main() -> int:
         check("name 与目录一致", doc.get("name") == RUNNER_DIR.name, str(doc.get("name")))
     check("version 是语义化版本", isinstance(doc.get("version"), str)
           and len(str(doc["version"]).split(".")) == 3, str(doc.get("version")))
+    # runner.yaml 的 version 必须与运行期实现自报的版本一致：两者漂移时，平台注册的是 A 版本，
+    # 结果里写的是 B 版本，事后无法对齐（本项目踩过：yaml 1.0.6 / 代码 1.0.11）。
+    check("version 与 agentx_runner.RUNNER_VERSION 一致",
+          str(doc.get("version")) == str(runner.RUNNER_VERSION),
+          f"yaml={doc.get('version')} 代码={runner.RUNNER_VERSION}")
+    if not str(doc.get("image") or "").endswith(":" + str(doc.get("version"))):
+        print(f"WARN image tag 与 version 不同版本线：image={doc.get('image')} version={doc.get('version')}"
+              "（镜像可先于内容发版，仅提示）")
     check("role 是 test", doc.get("role") == "test", str(doc.get("role")))
     check("on_failure 是 continue（测试类不该终止 Task）", doc.get("on_failure") == "continue")
     check("entry 是 exec form 数组", doc.get("entry") == ["/runner/run.sh"], str(doc.get("entry")))

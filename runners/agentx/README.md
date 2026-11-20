@@ -7,7 +7,7 @@
 
 - 角色 `test`，`on_failure: continue`（跑完即出指标，不终止 Task，§7.3 / §7.4）
 - 入口 `/runner/run.sh`，契约见 [ARCHITECTURE.md](../../design/ARCHITECTURE.md) §5.2–§5.12、附录 A
-- 镜像 `registry.dev.huawei.com/argus/agentx:1.0.6`（约 1 GB）
+- 镜像 `registry.dev.huawei.com/argus/agentx:1.0.11`（约 1 GB），Runner 版本 `1.0.11`
 
 ## 目录结构
 
@@ -27,7 +27,7 @@ agentx/
 
 ## 跑的是什么
 
-1. **数据集**：用 `--tokenizer` 把每条 trace 重建为 tokenized、带 KV-cache 结构的会话树
+1. **数据集**：用分词器把每条 trace 重建为 tokenized、带 KV-cache 结构的会话树
    （parent + subagent）；重建结果按 `random_seed` 缓存，命中则秒级恢复。
 2. **warmup**：每条 lane 先回放一个深前缀，把服务端 prefix cache 填成真实多轮编码上下文；
    root 会话 warmup 一次失败即整体中止。
@@ -40,18 +40,19 @@ agentx/
 读取优先级：`--params-file` > `$AG_PARAMS_FILE` > `/workspace/input/params.jsonl`。
 
 ```json
-{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir":"/data/cc-traces","tokenizer":"/models/Qwen3-32B"}
+{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir":"cc-traces","offline":true}
 ```
 
 ```bash
-/runner/run.sh --params-file /tmp/params.jsonl \
+AG_MODEL_PATH=/models/Qwen3-32B \
+  /runner/run.sh --params-file /tmp/params.jsonl \
   --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
 ```
 
 | 通道 | 内容 |
 |---|---|
 | 输入文件 | 全部业务参数；未声明字段**拒绝**（报行号），多行时后者覆盖前者 |
-| 公共参数 | `AG_SERVED_URL` / `AG_SERVED_MODEL_NAME`（独立运行可用 `--url` / `--model_name` 覆盖） |
+| 公共参数 | `AG_SERVED_URL` / `AG_SERVED_MODEL_NAME`（独立运行可用 `--url` / `--model_name` 覆盖）、`AG_MODEL_PATH`（分词器，见下节） |
 | 元信息 | `AG_TASK_ID` / `AG_ATTEMPT` / `AG_RUNNER_SEQ`（缺省 `local` / `1` / `1`） |
 | 凭据 | `ENDPOINT_API_KEY`、`HF_TOKEN`（Task 级 secrets 注入，§12.4） |
 | 输出目录 | `/workspace/output`（`AG_OUTPUT_DIR` 可覆盖）：`result.json`、`agentx/`、`logs/`、`raw/` |
@@ -69,19 +70,36 @@ API key 以 `--api-key '${ENDPOINT_API_KEY}'` 的**引用**形式进 argv，明�
 | `concurrency` | `8` | 并发 session tree 数；subagent 并行时在飞请求可超过它 |
 | `benchmark_duration_seconds` | `1800` | 测量时长；**< 900 必须配 `allow_short_run=true`** |
 | `public_dataset` | `semianalysis_cc_traces_weka_062126` | date-pinned 公开语料别名（滚动别名不可比） |
-| `dataset_dir` | `""` | **本地语料目录**（`traces.jsonl` 的父目录）；设了就走离线路径，见下节 |
+| `dataset_dir` | `""` | **本地语料目录**（数据集名相对 `/data`，或绝对路径）；设了就走离线路径，见下节 |
 | `num_dataset_entries` | `0` | 只取前 N 条 trace（0 = 全量）。仅冒烟，改变负载但不改 `submission_valid` |
 | `max_context_length` | `0` | 客户端上下文过滤（0 = 不过滤），填服务真实上限 |
 | `random_seed` | `42` | 起始 turn / 回绕顺序 / 重建缓存 key；固定才能复现与复用缓存 |
-| `tokenizer` | `""` | 容器内绝对路径（生产推荐）/ HF 仓库名 / `builtin`；本地路径不存在会预检失败 |
 | `scenario` | `agentx` | `agentx`（3600 s、0~100% 起始窗口）或 `inferencex-agentx-mvp`（1800 s、25%~75%） |
 | `warmup_requests_per_lane` | `0` | 每 lane 额外预热请求数；与下一项互斥 |
 | `agentic_cache_warmup_duration` | `0` | 时长制缓存预热（秒，0 = 关）；与上一项互斥 |
 | `allow_short_run` | `false` | 放行 < 900 s 的短跑，结果固定 `submission_valid=false` |
-| `hf_cache_dir` | `""` | 公开语料路径下的 HF 缓存目录，缺省 `<output>/.cache/hf` 且跑完删除 |
+| `offline` | `false` | 不出网：给子进程设 `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` |
+| `hf_cache_dir` | `""` | HF 缓存目录；参数 > `HF_HOME` > 缺省 `<output>/.cache/hf`（跑完删除） |
+| `mmap_cache_dir` | `""` | 数据集重建缓存；参数 > `AIPERF_DATASET_MMAP_CACHE_DIR` > 缺省 `<output>/.cache/mmap` |
 | `keep_cache` | `false` | 保留 `<output>/.cache`（算进产物配额，仅排查用） |
-| `agentx_cmd` | `agentx` | 替换命令（离线测试指 `tests/stub_agentx.py`） |
-| `extra_args` | `""` | 透传未建模的开关，如 `--use-server-token-count` |
+| `agentx_cmd` | `agentx` | 替换命令（离线测试指 `python3 /runner/tests/stub_agentx.py`） |
+| `extra_args` | `""` | 透传未建模的开关，如 `--use-server-token-count`（别覆盖 `--ui` / `--tokenizer`） |
+
+`tokenizer` **不是**参数：它是公共参数 `AG_MODEL_PATH`（§5.4.1），写进参数文件会被当未声明字段拒绝。
+
+## 分词器（AG_MODEL_PATH）
+
+分词器由平台以公共参数注入，Runner 把它原样交给 `--tokenizer`：
+
+| `AG_MODEL_PATH` | 行为 |
+|---|---|
+| 容器内绝对路径（推荐，如 `/models/Qwen3-32B`） | 路径不存在在参数预检阶段直接失败（退出码 2），不会跑到一半才报错 |
+| `builtin` | tiktoken o200k_base，零依赖（镜像内已预缓存），**不是**服务端模型的分词器，只适合冒烟 |
+| HF 仓库名（如 `Qwen/Qwen3-32B`） | 需要能访问 Hub 或 `HF_HOME` 里已有缓存 |
+| 未注入 | agentx 按 `AG_SERVED_MODEL_NAME` 推导；离线环境通常推导不到，建议注入，或配 `offline=true` 让失败更早暴露 |
+
+`AG_MODEL_PATH` 是**可选**依赖（没有也能跑），所以 `consumes` 只声明 `AG_SERVED_URL` /
+`AG_SERVED_MODEL_NAME`——否则外接模式（`service` 块只有 url / model_name）会在组合期被拒（§5.12）。
 
 ## 语料：挂载本地目录（容器内不联网）
 
@@ -92,14 +110,17 @@ API key 以 `--api-key '${ENDPOINT_API_KEY}'` 的**引用**形式进 argv，明�
 docker run --rm \
   -v ~/code/cc-traces-weka-062126:/data/cc-traces \
   -v /host/weights/Qwen3-32B:/models/Qwen3-32B:ro \
+  -e AG_MODEL_PATH=/models/Qwen3-32B \
+  -e AG_SERVED_URL=http://10.0.0.10:8000/v1 \
+  -e AG_SERVED_MODEL_NAME=Qwen3-32B \
   -v /tmp/out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
-  registry.dev.huawei.com/argus/agentx:1.0.6 \
-  /runner/run.sh --url http://10.0.0.10:8000/v1 --model_name Qwen3-32B
+  registry.dev.huawei.com/argus/agentx:1.0.11 \
+  /runner/run.sh
 ```
 
 ```json
-{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir":"/data/cc-traces","tokenizer":"/models/Qwen3-32B"}
+{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir":"/data/cc-traces","offline":true}
 ```
 
 Runner 在 `dataset_dir` 下按顺序找语料：
@@ -117,14 +138,12 @@ Runner 在 `dataset_dir` 下按顺序找语料：
 
 - 走的是 `--custom-dataset-type weka_trace --input-file`，**不是** `--public-dataset`：Runner 会自动补
   `--unsafe-override`，结果**固定 `submission_valid=false`**，不可与其他 AgentX 结果对比或提交。
-- `tokenizer` 三种写法：**容器内绝对路径**（生产推荐，如 `-v /host/weights/Qwen3-32B:/models/Qwen3-32B:ro`
-  + `"tokenizer":"/models/Qwen3-32B"`）、HF 仓库名（配 `-e HF_HOME` 指到已缓存目录）、
-  `builtin`（tiktoken 零依赖，仅冒烟用）。本地路径不存在会在参数预检阶段直接失败。
-- 镜像默认 agentx-harness **1.0.14**（`--build-arg AGENTX_VERSION=` 可覆盖）；本地 tokenizer 路径与
-  `HF_HUB_OFFLINE` 兼容（1.0.7 的离线分支会把路径当 repo id，已在新版修掉）。
-- 镜像里那份 tiktoken 词表只服务 `builtin`：构建时下载不到只会打警告，不影响传本地路径；
+- 镜像默认 agentx-harness **1.0.14**（`--build-arg AGENTX_VERSION=` 可覆盖）；本地分词器路径与
+  `HF_HUB_OFFLINE` 兼容（旧版 1.0.7 的离线分支会把路径当 repo id，已在新版修掉）。
+- 镜像里那份 tiktoken 词表只服务 `AG_MODEL_PATH=builtin`：构建时下载不到只会打警告，不影响传本地路径；
   确定不用 builtin 就 `--build-arg TIKTOKEN_CACHE=0` 跳过下载。
 - 平台内：Execution Profile 把语料 PVC 挂到 `/data/cc-traces`（可写）；`/tmp` 只有 256 MiB，别放那儿。
+  要跨 attempt 复用缓存，把 `hf_cache_dir` / `mmap_cache_dir` 指到可写 PVC。
 - 要「可对比 / 可提交」的结果必须走 `public_dataset`，它读 HuggingFace datasets 缓存
   （`<HF_HOME>/hub` + `<HF_HOME>/datasets`）；只挂 `hub/` 时离线会报
   `Couldn't reach ... (OfflineModeIsEnabled)`。
@@ -149,12 +168,18 @@ Runner 在 `dataset_dir` 下按顺序找语料：
 `submission_valid` 与 `submission_invalid_reasons` 落在 `metadata` 与 `notes`：它是**有效性戳，不是
 执行结果**——`false` 不会让本 Runner 失败（§5.8）。
 
+`result.json` 的 `workload` 记录 `base_url` / `model_name` / `scenario` / `dataset_source`（`public`
+或 `local`）/ `concurrency` / `benchmark_duration_seconds` / `random_seed`，以及本次生效的
+`public_dataset` 或 `dataset_dir`+`dataset_path`、`num_dataset_entries`、`max_context_length`、
+`tokenizer`；`metadata` 记录工具与版本、提交有效性、两个缓存目录的实际取值、`dataset_cache_kept`
+和最终命令（密钥只以 `${ENDPOINT_API_KEY}` 引用形态出现）。
+
 ## 退出码
 
 | 码 | 含义 | `error.code` |
 |---|---|---|
 | `0` | agentx 跑完且产物可解析 | — |
-| `1` | agentx 非零退出 / 产物缺失或损坏 / 被取消 | `RUNNER_NONZERO_EXIT` / `RESULT_INVALID` / `CANCELED` |
+| `1` | agentx 非零退出 / 产物缺失或损坏 / 被取消 / 内部异常 | `RUNNER_NONZERO_EXIT` / `RESULT_INVALID` / `CANCELED` / `INTERNAL_ERROR` |
 | `2` | 参数或输入错误 | `VALIDATION_ERROR` |
 
 错误码只用附录 D 枚举：自造码会被平台静默降级成 `RUNNER_NONZERO_EXIT`。
@@ -167,17 +192,18 @@ Runner 在 `dataset_dir` 下按顺序找语料：
 | 独占 | `concurrency.endpoint_exclusive: true`：并行测量会污染吞吐与前缀命中率（§6.7） |
 | 超时 | 冷启动 + warmup + `benchmark_duration_seconds` + drain；建议 `timeout_seconds ≥ duration + 1800`，正式 1800 s 跑建议 ≥ `5400` |
 | 非 root | 以 uid 10001 运行（PSA restricted）；挂载属主由平台 `fsGroup` 或 `-u` 保证 |
-| 出网 | 语料与 tokenizer 都由挂载提供时不需要外网；但**本地 tokenizer 路径不要配 `HF_HUB_OFFLINE`**（见语料一节） |
-| 内部别名 | 服务端模型名不是可解析的 HF 仓库时**必须**给 `tokenizer` |
+| 出网 | 语料与分词器都由挂载提供时不需要外网：打开 `offline=true` 把「不许出网」写成断言 |
+| 内部别名 | 服务端模型名不是可解析的 HF 仓库时**必须**注入 `AG_MODEL_PATH`（本地路径或 `builtin`） |
 
 ## 独立运行
 
 ```bash
 export IMAGE=registry.dev.huawei.com/argus/agentx@sha256:...
-echo '{"concurrency":8,"benchmark_duration_seconds":60,"allow_short_run":true,"dataset_dir":"/data/cc-traces","tokenizer":"/models/Qwen3-32B"}' > /tmp/params.jsonl
+echo '{"concurrency":8,"benchmark_duration_seconds":60,"allow_short_run":true,"dataset_dir":"/data/cc-traces","offline":true}' > /tmp/params.jsonl
 docker run --rm \
   -v ~/code/cc-traces-weka-062126:/data/cc-traces \
   -v /host/weights/Qwen3-32B:/models/Qwen3-32B:ro \
+  -e AG_MODEL_PATH=/models/Qwen3-32B \
   -v /tmp/out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
   "${IMAGE}" \
@@ -186,13 +212,15 @@ jq . /tmp/out/result.json
 ```
 
 或 `run-local.sh`：`.local/params.jsonl` 自动挂成输入文件；设 `DATASET_DIR=~/code/cc-traces-weka-062126`
-自动挂到 `/data/cc-traces`（可写）（参数里仍要写 `dataset_dir`，缺了会提醒）；`~/.cache/agentx/mmap`
-自动挂成重建缓存（`MMAP_CACHE_DIR` 可换）。
+自动挂到 `/data/cc-traces`（可写）（参数里仍要写 `dataset_dir`，缺了会提醒）；设
+`MODEL_PATH=/host/weights/Qwen3-32B` 自动挂到 `/models/Qwen3-32B` 并注入 `AG_MODEL_PATH`；
+`~/.cache/agentx/mmap` 自动挂成重建缓存（`MMAP_CACHE_DIR` 可换）。
 
 ```bash
 cd runners/agentx && mkdir -p .local
-echo '{"dataset_dir":"/data/cc-traces","tokenizer":"builtin","concurrency":8}' > .local/params.jsonl
-DATASET_DIR=~/code/cc-traces-weka-062126 ./run-local.sh --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
+echo '{"dataset_dir":"/data/cc-traces","concurrency":8,"offline":true}' > .local/params.jsonl
+MODEL_PATH=/host/weights/Qwen3-32B DATASET_DIR=~/code/cc-traces-weka-062126 \
+  ./run-local.sh --url=http://10.0.0.10:8000/v1 --model_name=Qwen3-32B
 ```
 
 ## 构建
@@ -201,7 +229,7 @@ DATASET_DIR=~/code/cc-traces-weka-062126 ./run-local.sh --url=http://10.0.0.10:8
 
 ```bash
 cd runners/agentx
-TAG=1.0.6
+TAG=1.0.11
 docker build -f build/Dockerfile -t registry.dev.huawei.com/argus/agentx:${TAG} .   # 国内/离线加下面的 build-arg
 #   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.13-slim
 #   --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
@@ -220,9 +248,22 @@ docker build -f runners/agentx/tests/Dockerfile.stub runners/agentx -t agentx-ru
 docker run --rm agentx-runner:stub                        # 容器内冒烟（stub 不进发布矩阵）
 ```
 
-1. `runner.yaml` 对照 `runners/mock-deploy`；`placeholder` 单行合法 JSONL（`tests/test_runner_yaml.py` 守）。
-2. 重启 argusd → `GET /api/v1/runners` 出现 `agentx@1.0.6`（K-3：启动期扫描，无运行时注册）。
+1. `runner.yaml` 对照 `runners/mock-deploy`；`placeholder` 单行合法 JSONL、只用声明过的字段
+   （`tests/test_runner_yaml.py` 守，含「参数集合与 `agentx_runner.DEFAULTS` 完全一致」的漂移检查）。
+2. 重启 argusd → `GET /api/v1/runners` 出现 `agentx@1.0.11`（K-3：启动期扫描，无运行时注册）。
 3. `POST /tasks?dry_run=true` 过 → 小参数真提交（短跑 + 小语料）→ 看 `logs/` 与 `result.json`。
 
 > 内容一变就必须升 `version`（含 description / placeholder / display_name），否则同版本不同内容会
 > `RUNNER_VERSION_PINNED`（§5.6.1）。
+
+## 变更说明（1.0.6 → 1.0.11）
+
+- **分词器从业务参数改为公共参数**：`tokenizer` 不再是 `parameters` 的一项，改由平台注入
+  `AG_MODEL_PATH`，Runner 原样传给 `--tokenizer`。参数文件里再写 `tokenizer` 会被当未声明字段拒绝。
+- **新增 `offline`**：显式打开后给子进程设 `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE`，
+  避免「本地语料 + 没给分词器」时静默去 HuggingFace 下载几百 MB。
+- **新增 `mmap_cache_dir`**：数据集重建缓存目录可配（参数 > `AIPERF_DATASET_MMAP_CACHE_DIR` > 缺省），
+  配合 `hf_cache_dir` 把两个缓存指到可写 PVC 上，跨 attempt 复用。
+- `dataset_dir` 支持**数据集名**（相对平台挂载的 `/data`），不必再写死绝对路径；
+  绝对路径（以 `/` 开头）仍然按原样使用。
+- `workload` / `metadata` 增补本次生效的缓存目录、`dataset_source`、`dataset_cache_kept` 与最终命令。
