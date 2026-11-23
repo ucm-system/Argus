@@ -128,6 +128,13 @@ sharedMounts:
     mountPath: /mnt/model
     readOnly: true
     claimName: models-nfs
+  # 数据集 / 语料：**可写**（agentx 要在语料目录里生成 .agentx-split/）。
+  # 整卷挂到 /data、无 subPath：语料放 PVC 子目录，Task 里用 dataset_dir 选（"cc-traces" → /data/cc-traces）。
+  # 该 claim 由存储侧提供，平台只引用名字；目录 0770、属主 10001，NFS 上 fsGroup 无效。
+  - name: dataset
+    mountPath: /data
+    readOnly: false
+    claimName: argus-dataset
 sharedMountsDisabledProfiles: []
 
 extraObjects: []

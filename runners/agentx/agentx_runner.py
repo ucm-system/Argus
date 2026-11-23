@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 RUNNER_NAME = "agentx"
-RUNNER_VERSION = "1.0.11"
+RUNNER_VERSION = "1.0.14"
 
 OUT = Path(os.environ.get("AG_OUTPUT_DIR") or "/workspace/output")
 LOGS = OUT / "logs"
@@ -43,8 +43,8 @@ AGENTX_LOG = LOGS / "agentx.log"
 DEFAULTS: dict[str, Any] = {
     "concurrency": 8,
     "benchmark_duration_seconds": 1800,
-    "public_dataset": "semianalysis_cc_traces_weka_062126",
-    "dataset_dir": "",
+    "public_dataset": "semianalysis_cc_traces_weka_062126_256k",
+    "dataset_dir": "cc_traces_weka_062126-256k",
     "num_dataset_entries": 0,
     "max_context_length": 0,
     "random_seed": 42,
@@ -52,7 +52,7 @@ DEFAULTS: dict[str, Any] = {
     "warmup_requests_per_lane": 0,
     "agentic_cache_warmup_duration": 0,
     "allow_short_run": False,
-    "offline": False,
+    "offline": True,
     "hf_cache_dir": "",
     "mmap_cache_dir": "",
     "keep_cache": False,

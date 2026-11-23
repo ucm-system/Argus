@@ -255,6 +255,15 @@ sharedMounts:
     mountPath: /mnt/model
     readOnly: true
     claimName: argus-models
+  # 数据集 / 语料：**可写**（agentx 这类 Runner 要在语料目录里写 .agentx-split/）。
+  # 共享挂载是**整卷**（渲染时没有 subPath）：语料放在 PVC 的子目录里，
+  # 提交 Task 时用参数选子目录（agentx 的 dataset_dir: "cc-traces" → /data/cc-traces）。
+  # PVC 由集群提供（平台不创建、不校验存在性：缺了 Pod 会 Pending 并只打 warning）；
+  # 权限：目录 0770、属主 10001，NFS 上 fsGroup 无效（研究 #69）。
+  - name: dataset
+    mountPath: /data
+    readOnly: false
+    claimName: argus-dataset
 # 关闭统一挂载的 Execution Profile 名（逗号分隔；D-63 ③ 的 DB 列落地前的等效开关）
 sharedMountsDisabledProfiles: []
 

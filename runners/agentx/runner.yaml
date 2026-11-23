@@ -17,7 +17,7 @@ role: test
 on_failure: continue
 entry: ["/runner/run.sh"]
 input_format: jsonl
-image: registry.dev.huawei.com/argus/agentx:1.0.14
+image: registry.dev.huawei.com/argus/agentx:latest
 
 resources:
   cpu: "4"
@@ -31,7 +31,7 @@ mounts: []
 exports: []
 consumes: [AG_SERVED_URL, AG_SERVED_MODEL_NAME]
 
-placeholder: '{"concurrency":8,"benchmark_duration_seconds":1800,"public_dataset":"semianalysis_cc_traces_weka_062126","random_seed":42}'
+placeholder: '{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir": "cc_traces_weka_062126","random_seed":42, "max_context_length": 0}'
 
 parameters:
   - name: concurrency
@@ -49,15 +49,6 @@ parameters:
       测量时长（秒）。scenario 下限 900 秒，低于它需同时打开 allow_short_run。
       正式对比推荐 1800，需要更长稳态时用 3600。
 
-  - name: public_dataset
-    type: string
-    required: false
-    default: semianalysis_cc_traces_weka_062126
-    description: |
-      Weka agentic trace 语料别名。推荐保持默认的 date-pinned 别名
-      semianalysis_cc_traces_weka_062126（393 条会话，1.85GB，公开无鉴权）；
-      上下文窗口约 256k 的服务用 _256k 变体。滚动别名会随语料更新而变化，两次运行不可比。
-
   - name: dataset_dir
     type: string
     required: false
@@ -67,14 +58,7 @@ parameters:
       指向 traces.jsonl 的父目录而不是文件本身。目录需可写（Runner 会在其中生成 .agentx-split/）；
       只想只读挂载就预先放好拆好的 *.json。设置后不再使用 public_dataset，结果固定
       submission_valid=false，不可与公开语料的运行比较。
-    example: cc-traces
-
-  - name: num_dataset_entries
-    type: integer
-    required: false
-    default: 0
-    description: |
-      只回放语料前 N 条 trace，0 = 全量 393 条。仅用于冒烟，不要用于需要对比或提交的数据。
+    example: cc_traces_weka_062126-256k
 
   - name: max_context_length
     type: integer
@@ -83,6 +67,22 @@ parameters:
     description: |
       客户端上下文过滤：丢掉超过该 token 数的 trace，0 = 不过滤。
       推荐填被测服务真实的最大上下文，例如 128000。
+
+  - name: public_dataset
+    type: string
+    required: false
+    default: semianalysis_cc_traces_weka_062126
+    description: |
+      Weka agentic trace 语料别名。推荐保持默认的 date-pinned 别名
+      semianalysis_cc_traces_weka_062126（393 条会话，1.85GB，公开无鉴权）；
+      上下文窗口约 256k 的服务用 _256k 变体。滚动别名会随语料更新而变化，两次运行不可比。
+
+  - name: num_dataset_entries
+    type: integer
+    required: false
+    default: 0
+    description: |
+      只回放语料前 N 条 trace，0 = 全量 393 条。仅用于冒烟，不要用于需要对比或提交的数据。
 
   - name: random_seed
     type: integer
