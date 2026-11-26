@@ -81,8 +81,8 @@
   }
   .nav.scrolled { background: rgba(11, 19, 34, 0.72); }
   .nav .wrap { display: flex; align-items: center; justify-content: space-between; width: 100%; }
-  .wordmark { display: flex; align-items: center; gap: 12px; font-size: 16px; font-weight: 600; color: #fff; letter-spacing: 0.01em; }
-  .wordmark img { width: 34px; height: 34px; }
+  .wordmark { display: flex; align-items: center; }
+  .wordmark img { height: 44px; width: auto; display: block; }
   .nav-links { display: flex; gap: 30px; font-size: 14px; }
   .nav-links a { color: var(--moonlight); transition: color 0.3s; }
   .nav-links a:hover { color: #fff; }
@@ -285,8 +285,7 @@
 <nav class="nav" id="nav">
   <div class="wrap">
     <a class="wordmark" href="#top">
-      <img src="assets/argus-icon.webp" alt="Argus" />
-      Argus
+      <img src="assets/argus-brand.webp" alt="Argus" />
     </a>
     <div class="nav-links">
       <a href="#pipeline">管道</a>
@@ -315,7 +314,7 @@
         </div>
       </div>
       <div class="glass hero-card">
-        <div class="hero-robot"><img src="assets/argus-assistant.webp" alt="Argus 机器人" /></div>
+        <div class="hero-robot"><img src="assets/argus-robot.webp" alt="Argus 机器人" /></div>
         <div class="hero-card-body">
           <div class="term"><span class="c"># 提交一个评测 Task</span>
 <span class="b">POST</span> /api/v1/tasks
@@ -470,7 +469,7 @@
 
 <footer>
   <div class="wrap">
-    <div class="wordmark"><img src="assets/argus-icon.webp" alt="" style="width:26px;height:26px" /> Argus</div>
+    <div class="wordmark"><img src="assets/argus-brand.webp" alt="Argus" style="height:34px" /></div>
     <div class="f-links">
       <a href="https://github.com/ucm-system/Argus">GitHub</a>
       <a href="https://github.com/ucm-system/Argus/blob/main/design/ARCHITECTURE.md">架构</a>
