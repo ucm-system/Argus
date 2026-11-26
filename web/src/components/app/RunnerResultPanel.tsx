@@ -6,7 +6,7 @@ import { toApiError } from '@/api/client'
 import type { ApiErrorBody, Artifact, RunnerExecution } from '@/api/types'
 import { MetricsTable } from '@/components/app/MetricsTable'
 import { RunnerStatusBadge } from '@/components/app/StatusBadge'
-import { Badge, Tag } from '@/components/ui/badge'
+import { Badge } from '@/components/ui/badge'
 import { buttonClassName } from '@/components/ui/button'
 import { parseCsv } from '@/components/app/ArtifactViewer'
 import { saveBlob } from '@/lib/download'
@@ -251,39 +251,27 @@ export function RunnerResultPanel({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full flex-wrap items-center gap-2 px-1 py-2.5 text-left"
+        className="flex w-full items-center justify-between gap-4 px-1 py-3 text-left"
       >
-        <span className="text-fg-3 transition-transform" style={{ transform: open ? 'rotate(90deg)' : 'none' }} aria-hidden>
-          ▸
+        <span className="flex min-w-0 items-start gap-2.5">
+          <span className="mt-1 text-fg-3 transition-transform" style={{ transform: open ? 'rotate(90deg)' : 'none' }} aria-hidden>▸</span>
+          <span className="min-w-0">
+            <span className="flex flex-wrap items-center gap-2.5">
+              <span className="text-sm font-medium text-fg"><span className="mr-1.5 font-mono text-2xs text-fg-3">#{runner.seq}</span>{runner.name}</span>
+              <RunnerStatusBadge status={runner.status} />
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs leading-4 text-fg-3">
+              <span className="font-mono">{runner.runner_name}@{runner.runner_version}</span>
+              <span aria-hidden>·</span><span>{runnerDuration(runner)}</span>
+              <span aria-hidden>·</span>
+              <span>{found.html ? 'result.html' : found.csv ? 'result.csv' : runner.result_ref ? 'result.json' : roleArtifacts.length > 0 ? `产物 ${roleArtifacts.length} 份` : '无结果文件'}</span>
+            </span>
+          </span>
         </span>
-        <span className="text-sm font-medium text-fg">
-          <span className="mr-1.5 font-mono text-2xs text-fg-3">#{runner.seq}</span>
-          {runner.name}
-        </span>
-        <RunnerStatusBadge status={runner.status} />
-        <Tag mono>
-          {runner.runner_name}@{runner.runner_version}
-        </Tag>
-        <span className="text-2xs text-fg-3">{runnerDuration(runner)}</span>
-        {found.html ? (
-          <Badge tone="info">result.html</Badge>
-        ) : found.csv ? (
-          <Badge tone="info">result.csv</Badge>
-        ) : runner.result_ref ? (
-          <Badge tone="ok">result.json</Badge>
-        ) : roleArtifacts.length > 0 ? (
-          <Badge tone="muted">产物 {roleArtifacts.length} 份</Badge>
-        ) : (
-          <Badge tone="muted">无结果文件</Badge>
-        )}
-        {runner.error ? (
-          <Badge tone="err" className="font-mono">
-            {runner.error.code}
-          </Badge>
-        ) : null}
+        <span className="shrink-0 text-xs text-primary-text">{picked ? '查看结果' : '展开详情'}<span className="ml-1" aria-hidden>↗</span></span>
       </button>
       {open ? (
-        <div className={cn('flex flex-col gap-2 px-1 pb-3')}>
+        <div className={cn('mb-1 ml-6 flex flex-col gap-3 border-l border-line-soft px-4 pb-4 pt-1')}>
           {runner.error ? (
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-danger/25 bg-danger-weak px-3 py-2 text-2xs">
               <Badge tone="err" className="font-mono">

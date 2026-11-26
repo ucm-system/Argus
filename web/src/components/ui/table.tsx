@@ -42,7 +42,7 @@ export function TH({ className, ...rest }: ThHTMLAttributes<HTMLTableCellElement
     <th
       scope="col"
       className={cn(
-        'h-10 whitespace-nowrap px-3 text-left align-middle text-xs font-medium text-fg-2',
+        'h-10 whitespace-nowrap bg-surface-2 px-4 text-left align-middle text-2xs font-medium text-fg-3',
         className,
       )}
       {...rest}
@@ -51,7 +51,7 @@ export function TH({ className, ...rest }: ThHTMLAttributes<HTMLTableCellElement
 }
 
 export function TD({ className, ...rest }: TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={cn('px-3 py-2 align-middle text-sm text-fg-2', className)} {...rest} />
+  return <td className={cn('px-4 py-2 align-middle text-sm text-fg-2', className)} {...rest} />
 }
 
 /** 空表提示（列表空态）：表格内一行占满宽度。 */

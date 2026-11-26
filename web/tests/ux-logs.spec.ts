@@ -84,7 +84,7 @@ test('③ 结果视图：打包下载 .zip 存在且点击触发下载，按文�
 
   const bundle = page.getByTestId('download-bundle')
   await expect(bundle).toBeVisible()
-  await expect(bundle).toContainText('打包下载 .zip')
+  await expect(bundle).toContainText('打包下载')
 
   const [download] = await Promise.all([page.waitForEvent('download'), bundle.click()])
   expect(download.suggestedFilename()).toMatch(/\.zip$/)

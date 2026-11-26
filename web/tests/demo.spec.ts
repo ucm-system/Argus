@@ -66,7 +66,7 @@ test.fixme('演示：提交服务形态 Task → 详情 → 报告 → 集群 �
   await expect(page.getByLabel('服务 base URL')).toBeVisible()
   await shot('02-submit')
 
-  await page.getByRole('button', { name: '提交', exact: true }).click()
+  await page.getByTestId('submit-task').click()
   await expect(page).toHaveURL(/\/tasks\/[^/]+$/, { timeout: 20_000 })
   const runUrl = new URL(page.url()).pathname
 

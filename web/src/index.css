@@ -36,11 +36,13 @@
   --font-mono: "Cascadia Mono", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas,
     monospace;
 
-  /* ---------- 字号标尺（对齐 shadcn/Tailwind：12 14 16 18 20 24 30，11 只给 2xs 元信息） ---------- */
-  --text-2xs: 11px;
-  --text-2xs--line-height: 16px;
-  --text-xs: 12px;
-  --text-xs--line-height: 18px;
+  /* ---------- 字号标尺（shadcn New York 的中文控制台档位） ----------
+     层级：正文/表格 14 ≥ 辅助与关键操作 13.5 ≥ 元信息 12（#117：中文正文不低于 13.5px，
+     只有非关键元信息允许落到 12px；11px 档已取消——它是"整页小字"的源头）。 */
+  --text-2xs: 12px;
+  --text-2xs--line-height: 18px;
+  --text-xs: 13.5px;
+  --text-xs--line-height: 20px;
   --text-sm: 14px;
   --text-sm--line-height: 21px;
   --text-base: 16px;
@@ -90,10 +92,10 @@
      没定义就会渲染成透明/继承（组件"看着像没样式"）。值取 shadcn neutral 默认。 */
   --color-sidebar: oklch(0.985 0 0);
   --color-sidebar-foreground: oklch(0.145 0 0);
-  --color-sidebar-primary: oklch(0.205 0 0);
-  --color-sidebar-primary-foreground: oklch(0.985 0 0);
-  --color-sidebar-accent: oklch(0.97 0 0);
-  --color-sidebar-accent-foreground: oklch(0.205 0 0);
+  --color-sidebar-primary: var(--color-primary);
+  --color-sidebar-primary-foreground: var(--color-primary-fg);
+  --color-sidebar-accent: var(--color-primary-weak);
+  --color-sidebar-accent-foreground: var(--color-primary-text);
   --color-sidebar-border: oklch(0.922 0 0);
   --color-sidebar-ring: oklch(0.708 0 0);
   --color-chart-1: oklch(0.646 0.222 41.116);

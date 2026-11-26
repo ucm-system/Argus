@@ -309,13 +309,15 @@ test('提交页：服务来源一张卡两形态 + Deploy YAML 语法高亮与 T
   await page.setViewportSize({ width: 1440, height: 1100 })
   await page.goto('/submit')
 
-  // 服务来源：runner 管道卡里的第 0 步；下拉与 runner 行同一形态（Genet 默认 / Mock / 已有服务）
+  // 服务来源：独立卡两形态（#111 重排：服务来源卡在测试配置卡之前）；
+  // 平台部署下拉列出全部 deploy runner（Genet 默认 / Mock）
   await expect(page.getByText('服务来源', { exact: false }).first()).toBeVisible()
+  const sourceMode = page.getByTestId('source-mode')
+  await expect(sourceMode).toBeVisible()
   const sourceSelect = page.getByTestId('deploy-runner')
   await expect(sourceSelect).toBeVisible()
   await expect(sourceSelect).toContainText('Genet 服务部署（内置）')
   await expect(sourceSelect).toContainText('Mock 服务部署（内置）')
-  await expect(sourceSelect).toContainText('已有服务（不部署，直接填地址）')
 
   // 部署形态（默认 Genet）：CodeMirror 编辑器在，且真做了语法高亮 + 行号
   const editor = page.getByLabel('部署描述 YAML')
@@ -357,8 +359,8 @@ test('提交页：服务来源一张卡两形态 + Deploy YAML 语法高亮与 T
   await page.waitForTimeout(400)
   await page.screenshot({ path: join(OUT_DIR, '09-submit-yaml-highlight.png'), fullPage: true })
 
-  // 切到「已有服务」：同一张卡换成服务三元组字段
-  await sourceSelect.selectOption({ label: '已有服务（不部署，直接填地址）' })
+  // 切到「已有服务」：同一张卡换成服务三元组字段（#111：分段控件切换）
+  await sourceMode.getByRole('button', { name: '已有服务' }).click()
   await expect(page.getByLabel('服务 base URL')).toBeVisible()
   await expect(page.getByText('模型路径（可选）')).toBeVisible()
   await expect(page.getByLabel('部署描述 YAML')).toHaveCount(0)

@@ -14,13 +14,13 @@ import { Input } from '@/components/ui/input'
 import { PAGE_SIZES, Pagination } from '@/components/ui/pagination'
 import { TableSkeleton } from '@/components/ui/skeleton'
 import { EmptyState, ErrorState } from '@/components/ui/states'
-import { taskStatusMeta } from '@/lib/status'
+import { progressHeadline, taskStatusMeta } from '@/lib/status'
 import { formatDateTime, formatDuration, formatRelative, runDuration } from '@/lib/utils'
 
 /**
  * 全量 Task 表（D-62：从运行列表搬到概览，与 KPI 同页共存）。
  *
- * v2（D-73）：数据来自 `GET /tasks`（Task 投影，runner 进度取 `runner_counts`）；
+ * v2（D-73）：数据来自 `GET /tasks`（Task 投影，计数取 `runner_counts`）；
  * facets 只有 status / submitter / runner 三个维度（`kind` 随占位 Run 概念取消）。
  *
  * D-61：真分页 + Excel 式表头列筛选。
@@ -29,6 +29,10 @@ import { formatDateTime, formatDuration, formatRelative, runDuration } from '@/l
  *
  * 状态全进 URL：`page` / `page_size` / `status` / `submitter` / `runner` / `q`。
  * 改筛选一律**重置到第 1 页**，否则会停在空页上。
+ *
+ * 搜索语义（#113）：`GET /tasks` 契约只有 status/runner/submitter 过滤，**没有名称/ID 查询**；
+ * 在不改契约的前提下，`q` 是**页内查找**——输入框、结果计数与空态都必须把范围写在明面上，
+ * 不伪装成全库搜索，也不能让"另一个页里存在的 ID"被读成"Task 不存在"。
  */
 
 const DEFAULT_PAGE_SIZE = 20
@@ -54,10 +58,27 @@ function pickPageSize(raw: string | null): number {
   return (PAGE_SIZES as readonly number[]).includes(value) ? value : DEFAULT_PAGE_SIZE
 }
 
-function progress(task: Task): string {
+/** 进度与结论分列：条形图只表达完成比例，不参与成功/失败判定。 */
+function ProgressCell({ task }: { task: Task }) {
+  const headline = progressHeadline({
+    status: task.status,
+    counts: task.runner_counts,
+    deployPhase: task.deploy?.phase ?? null,
+    deployWaitedSeconds: task.deploy?.waited_seconds ?? null,
+  })
   const counts = task.runner_counts
-  if (!counts) return '—'
-  return `${counts.succeeded + counts.failed + (counts.skipped ?? 0) + (counts.canceled ?? 0) === 0 && counts.total === 0 ? '—' : `${counts.succeeded} / ${counts.total}`}`
+  const ended = (counts?.succeeded ?? 0) + (counts?.failed ?? 0) + (counts?.skipped ?? 0) + (counts?.canceled ?? 0)
+  const total = counts?.total ?? 0
+  const percent = total > 0 ? Math.round((ended / total) * 100) : 0
+  const tone = task.status === 'failed' || task.status === 'service_unavailable' ? 'bg-danger' : task.status === 'succeeded' ? 'bg-success' : 'bg-primary'
+  return (
+    <div className="min-w-[8rem]" data-testid={`task-progress-${task.id}`}>
+      <span className="whitespace-nowrap text-xs font-medium text-fg">{headline}</span>
+      <div className="mt-2 h-1.5 w-24 overflow-hidden rounded-full bg-surface-3" aria-hidden>
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  )
 }
 
 export function TasksTable() {
@@ -177,21 +198,12 @@ export function TasksTable() {
       {
         id: 'id',
         header: 'Task',
-        meta: { className: 'whitespace-nowrap font-mono text-2xs' },
+        meta: { className: 'min-w-[12rem]' },
         cell: ({ row }) => (
-          <Link to={`/tasks/${row.original.id}`} className="text-primary-text hover:underline">
-            {row.original.id}
+          <Link to={`/tasks/${row.original.id}`} className="group block max-w-[18rem] text-fg hover:text-primary-text">
+            <span className="block truncate font-medium leading-5 group-hover:underline" title={row.original.name}>{row.original.name}</span>
+            <span className="block font-mono text-2xs font-normal leading-4 text-fg-3">{row.original.id}</span>
           </Link>
-        ),
-      },
-      {
-        id: 'name',
-        header: '名称',
-        meta: { className: 'max-w-[16rem]' },
-        cell: ({ row }) => (
-          <span className="block max-w-[16rem] truncate" title={row.original.name}>
-            {row.original.name}
-          </span>
         ),
       },
       {
@@ -212,27 +224,15 @@ export function TasksTable() {
       },
       {
         id: 'runners',
-        header: 'runner 进度',
-        meta: { className: 'whitespace-nowrap tabular-nums' },
-        cell: ({ row }) => progress(row.original),
-      },
-      {
-        id: 'attempt',
-        header: 'attempt',
-        meta: { className: 'whitespace-nowrap tabular-nums' },
-        cell: ({ row }) => (row.original.current_attempt === 0 ? '—' : `#${row.original.current_attempt}`),
-      },
-      {
-        id: 'duration',
-        header: '耗时',
-        meta: { className: 'whitespace-nowrap tabular-nums' },
-        cell: ({ row }) => formatDuration(runDuration(row.original)),
+        header: '执行进度',
+        meta: { className: 'whitespace-nowrap' },
+        cell: ({ row }) => <ProgressCell task={row.original} />,
       },
       {
         id: 'submitter',
         header: FACET_LABEL.submitter,
         meta: {
-          className: 'whitespace-nowrap',
+          className: 'hidden whitespace-nowrap min-[1440px]:table-cell',
           filter: (
             <FacetFilter
               label={FACET_LABEL.submitter}
@@ -246,10 +246,13 @@ export function TasksTable() {
       },
       {
         id: 'submitted_at',
-        header: '提交时间',
+        header: '时间',
         meta: { className: 'whitespace-nowrap text-2xs text-fg-3' },
         cell: ({ row }) => (
-          <span title={formatRelative(row.original.submitted_at)}>{formatDateTime(row.original.submitted_at)}</span>
+          <span className="block" title={formatRelative(row.original.submitted_at)}>
+            <span className="block text-fg-2">{formatDateTime(row.original.submitted_at)}</span>
+            <span className="mt-0.5 block text-fg-3">耗时 {formatDuration(runDuration(row.original))}</span>
+          </span>
         ),
       },
     ],
@@ -267,10 +270,26 @@ export function TasksTable() {
           sub={
             loading
               ? '加载中…'
-              : `共 ${total} 条${search ? ` · 本页命中 ${visible.length} 条` : ` · 第 ${Math.min(page, totalPages)} / ${totalPages} 页`}`
+              : search
+                ? `共 ${total} 条 · 在当前页 ${items.length} 条内查找「${search}」：命中 ${visible.length} 条`
+                : `共 ${total} 条 · 第 ${Math.min(page, totalPages)} / ${totalPages} 页`
           }
           actions={
             <div className="flex flex-wrap items-center gap-2">
+              <span className="min-[1440px]:hidden">
+                <FacetFilter
+                  label={FACET_LABEL.submitter}
+                  selected={filters.submitter}
+                  buckets={facets?.submitter ?? []}
+                  onApply={(values) => applyFacet('submitter', values)}
+                />
+              </span>
+              <FacetFilter
+                label={FACET_LABEL.runner}
+                selected={filters.runner}
+                buckets={facets?.runner ?? []}
+                onApply={(values) => applyFacet('runner', values)}
+              />
               <div className="relative">
                 <Search
                   className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-3"
@@ -279,28 +298,15 @@ export function TasksTable() {
                 <Input
                   value={search}
                   onChange={(event) => updateQuery({ q: event.target.value }, { resetPage: true })}
-                  placeholder="搜索名称 / ID"
-                  aria-label="搜索名称 / ID"
-                  title="只在当前页内查找"
-                  className="h-9 w-60 pl-8"
+                  placeholder="在当前页查找名称 / ID"
+                  aria-label="在当前页查找名称 / ID"
+                  title="查找只在当前页内进行，不跨页"
+                  className="h-9 w-72 pl-9"
                 />
               </div>
             </div>
           }
         />
-
-        {/* 按 Runner 筛选：候选值与计数来自 /tasks/facets */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-line-soft px-5 py-2 text-2xs text-fg-3">
-          <FacetFilter
-            label={FACET_LABEL.runner}
-            selected={filters.runner}
-            buckets={facets?.runner ?? []}
-            onApply={(values) => applyFacet('runner', values)}
-          />
-          {filters.runner.length > 0 ? (
-            <span className="font-mono text-fg-2">{filters.runner.join('、')}</span>
-          ) : null}
-        </div>
 
         {anyFilter ? (
           <div className="flex flex-wrap items-center gap-2 border-b border-line-soft bg-surface-2 px-5 py-2 text-2xs text-fg-3">
@@ -326,7 +332,7 @@ export function TasksTable() {
                 aria-label="清除页内查找"
                 className="inline-flex h-6 items-center gap-1 rounded-full border border-line bg-surface px-2 text-fg-2 transition-colors hover:border-line-strong hover:text-fg"
               >
-                <span className="font-mono">页内查找：{search}</span>
+                <span className="font-mono">当前页查找：{search}</span>
                 <X className="size-3" aria-hidden />
               </button>
             ) : null}
@@ -369,25 +375,47 @@ export function TasksTable() {
               data={visible}
               rowTestId={(task) => `task-row-${task.id}`}
               empty={
+                /**
+                 * 空态按条件组合分文案（#113）：
+                 *  - 只有关键字：绝不提示"放宽列筛选"——范围说明讲清"只在当前页找，
+                 *    该 Task 可能不在这一页"，并给翻页提示；
+                 *  - 有关键字 + 列筛选：两种条件都说；
+                 *  - 只有列筛选：保留"放宽列筛选"。
+                 */
                 <div className="flex flex-col items-center gap-2 py-4" data-testid="tasks-empty">
-                  <span className="text-sm font-medium text-fg-2">
-                    {anyFilter ? '当前筛选条件下没有 Task' : '还没有 Task'}
-                  </span>
-                  <span className="text-2xs text-fg-3">
-                    {anyFilter ? '放宽列筛选，或者清除全部条件。' : '去「提交 Task」创建第一个 Task。'}
-                  </span>
+                  {search ? (
+                    <>
+                      <span className="text-sm font-medium text-fg-2">
+                        当前页没有匹配「{search}」的 Task
+                      </span>
+                      <span className="max-w-md text-2xs leading-[18px] text-fg-3" data-testid="empty-search-scope">
+                        查找只在当前页 {items.length} 条内进行，不跨页。要找的 Task 可能不在这一页：
+                        翻页查找，或清除页内查找。
+                        {activeChips.length > 0 ? '也可以放宽列筛选后再试。' : ''}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-sm font-medium text-fg-2">
+                        {anyFilter ? '当前筛选条件下没有 Task' : '还没有 Task'}
+                      </span>
+                      <span className="text-2xs text-fg-3">
+                        {anyFilter ? '放宽列筛选，或者清除全部条件。' : '去「提交 Task」创建第一个 Task。'}
+                      </span>
+                    </>
+                  )}
                   {anyFilter ? (
                     <Button
                       size="sm"
                       data-testid="empty-clear-filters"
                       onClick={() =>
                         updateQuery(
-                          { status: null, submitter: null, runner: null, q: null },
+                          search ? { q: null } : { status: null, submitter: null, runner: null },
                           { resetPage: true },
                         )
                       }
                     >
-                      清除过滤
+                      {search ? '清除页内查找' : '清除过滤'}
                     </Button>
                   ) : null}
                 </div>
@@ -407,7 +435,7 @@ export function TasksTable() {
         )}
 
         {search && items.length > 0 ? (
-          <div className="border-t border-line-soft px-5 py-2 text-2xs text-fg-3">
+          <div className="border-t border-line-soft px-5 py-2 text-2xs text-fg-3" data-testid="search-scope-note">
             本页 {items.length} 条里命中 {visible.length} 条（页内查找，不跨页）
           </div>
         ) : null}

@@ -48,7 +48,7 @@ export function NotFoundPage({
         <div className="mx-auto flex max-w-lg flex-col items-center gap-6 text-center">
           {/* 主视觉：左 */}
           <img
-            src="/404.webp"
+            src="/argus-assistant.webp"
             alt=""
             aria-hidden
             width={760}
@@ -60,12 +60,12 @@ export function NotFoundPage({
 
           {/* 动作在下；标题与说明对读屏可见（sr-only），视觉上由图承担 */}
           <div className="w-full">
-            <h1 id="not-found-title" className="sr-only">
-              404 {title}
+            <h1 id="not-found-title" className="text-2xl font-semibold text-fg">
+              404 · {title}
             </h1>
-            <p className="sr-only">{description}</p>
+            <p className="mt-2 text-sm leading-[22px] text-fg-3">{description}</p>
 
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-center">
+            <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:justify-center">
               <Link to="/" data-testid="not-found-home">
                 <Button
                   variant="primary"

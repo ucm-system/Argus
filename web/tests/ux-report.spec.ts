@@ -34,8 +34,8 @@ test('② 结果视图：结论 + runner 明细 + 测试结果（三选一渲染
   await expect(page.getByTestId('task-result-panel')).toBeVisible({ timeout: 20_000 })
   await expect(page.getByTestId('task-result-verdict')).toContainText('失败')
 
-  // 结论：谁成功谁失败在结论一句话里（明细卡已删——与结论重复，用户 2026-11-11）
-  await expect(page.getByTestId('task-result-verdict')).toContainText('个 runner 失败')
+  // 结论：失败阶段进结论一句话（#116 重写后：runner 名 + 阶段；原始码只在诊断条）
+  await expect(page.getByTestId('task-result-verdict')).toContainText('accuracy-dataset-a')
   await expect(page.getByTestId('task-result-runners')).toHaveCount(0)
 
   // 测试结果：失败 runner 默认展开（内联渲染），成功 runner 折叠
@@ -56,9 +56,10 @@ test('② 结果视图：结论 + runner 明细 + 测试结果（三选一渲染
   expect(await downloads.count()).toBeGreaterThan(3)
   await expect(page.getByText('report.json', { exact: false }).first()).toBeVisible()
 
-  // 产物的「查看」进整页查看器（不再弹窗、不再裸链 API URL）
+  // 产物「查看」保留可分享 URL，同时在当前 Task 上打开弹窗。
   await page.locator('[data-testid="artifact-view"]').first().click()
   await expect(page).toHaveURL(/\/file\?path=/, { timeout: 15_000 })
+  await expect(page.getByRole('dialog')).toBeVisible()
 })
 
 test('③ 测试结果内联渲染 result.json 指标（不编数据；deploy/clean 不进该卡）', async ({ page }) => {

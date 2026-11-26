@@ -3,6 +3,7 @@ import { ArrowUpRight, Plus, Server } from 'lucide-react'
 import { api } from '@/api'
 import type { QueueStatus } from '@/api/types'
 import { KpiCard } from '@/components/app/KpiCard'
+import { PageHeader } from '@/components/app/PageHeader'
 import { TasksTable } from '@/components/app/TasksTable'
 import { Button } from '@/components/ui/button'
 import { KpiSkeleton } from '@/components/ui/skeleton'
@@ -33,21 +34,23 @@ export function DashboardPage() {
 
   return (
     <>
-      {/* 页面级动作放页头行：新建 Task / Runner 目录 */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Link to="/runners">
-            <Button size="sm" variant="ghost" icon={<Server className="size-3" aria-hidden />} data-testid="go-runners">
-              Runner 目录
-            </Button>
-          </Link>
-          <Link to="/submit">
-            <Button variant="primary" data-testid="new-task" icon={<Plus className="size-3.5" aria-hidden />}>
-              新建 Task
-            </Button>
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title="概览"
+        actions={
+          <>
+            <Link to="/runners">
+              <Button variant="ghost" icon={<Server className="size-4" aria-hidden />} data-testid="go-runners">
+                Runner 目录
+              </Button>
+            </Link>
+            <Link to="/submit">
+              <Button variant="primary" data-testid="new-task" icon={<Plus className="size-4" aria-hidden />}>
+                新建 Task
+              </Button>
+            </Link>
+          </>
+        }
+      />
 
       {error ? <ErrorState error={error} onRetry={reload} /> : null}
 

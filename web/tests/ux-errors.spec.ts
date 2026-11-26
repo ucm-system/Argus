@@ -16,9 +16,9 @@ test('① 非法提交：摘要滚进视口 + issues 逐条 + trace_id 可复制
   await page.goto('/submit')
   await expect(page.getByTestId('deploy-runner')).toBeVisible({ timeout: 15_000 })
 
-  // 造一个前端会拦下的提交（D-78 后 name 不再必填）：切外接模式，服务 URL 留空
-  await page.getByTestId('deploy-runner').selectOption({ label: '已有服务（不部署，直接填地址）' })
-  await page.getByRole('button', { name: '提交', exact: true }).click()
+  // 造一个前端会拦下的提交（D-78 后 name 不再必填）：切「已有服务」形态，服务 URL 留空
+  await page.getByTestId('source-mode').getByRole('button', { name: '已有服务' }).click()
+  await page.getByTestId('submit-task').click()
 
   const summary = page.getByTestId('form-error-summary')
   await expect(summary).toBeVisible({ timeout: 15_000 })
@@ -65,6 +65,8 @@ test('① 校验（dry_run）用同一套呈现：问题清单可见，不再是
   await page.addInitScript(() => window.localStorage.setItem('argus:mock-role', 'operator'))
   await page.goto('/submit')
 
+  // 执行环境在「高级配置」折叠区里（#111）：先展开再清空
+  await page.getByTestId('advanced-section').locator('summary').click()
   // D-78：name 不再必填；清空 execution.profile → 前端 issue（服务端同 path 回错）
   await page.getByLabel('执行环境 profile').fill('')
   await page.getByTestId('validate-task').click()
@@ -104,7 +106,7 @@ test('③ toast（sonner）仍保留 role=status 无障碍语义', async ({ page
   // 默认值是空的（用户要求只留 placeholder）：先填出一个能提交的表单
   await page.getByLabel('Task 名称').fill('toast-semantics')
   await page.getByLabel('runner 1 名称').fill('accuracy-dataset-a')
-  await page.getByRole('button', { name: '提交', exact: true }).click()
+  await page.getByTestId('submit-task').click()
   // 提交成功会跳详情并弹 toast（B8：一条「已受理 <run_id> · N 个 Task 已入队」+ 两个动作）
   await expect(page).toHaveURL(/\/tasks\/[^/]+$/, { timeout: 20_000 })
   // sonner 的实时区（aria-live=polite）里要能看到这条成功提示

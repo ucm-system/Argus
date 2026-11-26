@@ -315,17 +315,12 @@ export function JsonlEditor({
         />
       </div>
 
-      <div className="flex shrink-0 items-center gap-2 border-t border-line bg-surface-2 px-3 py-1.5 text-2xs">
-        {error ? (
-          <span className="text-danger-text">JSONL 校验失败：第 {error.line} 行（详见下方错误列表）</span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-fg-3">
-            <span className="size-1.5 rounded-full bg-success" aria-hidden />
-            JSONL 每行一个 JSON 对象
-          </span>
-        )}
-        <span className="ml-auto truncate text-fg-3">{hint ?? '拖动右下角可调整高度'}</span>
-      </div>
+      {error || hint ? (
+        <div className="flex shrink-0 items-center gap-2 border-t border-line bg-surface-2 px-3 py-1.5 text-2xs">
+          {error ? <span className="text-danger-text">JSONL 校验失败：第 {error.line} 行</span> : null}
+          {hint ? <span className="ml-auto truncate text-fg-3">{hint}</span> : null}
+        </div>
+      ) : null}
     </div>
   )
 }

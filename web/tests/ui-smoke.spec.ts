@@ -38,7 +38,9 @@ test('runs list -> detail task table -> submit dry-run error', async ({ page }) 
   await expect(page.getByTestId('validate-task')).toBeVisible()
 
   // 清空执行环境 profile，让 dry-run 返回校验错误（页面应显示“校验未通过” Banner）。
+  // 执行环境在「高级配置」折叠区里（#111）：先展开再操作。
   // D-78：Task / runner 名称已可选，不能再拿「名称留空」造前端必过、后端报错的场景。
+  await page.getByTestId('advanced-section').locator('summary').click()
   const profileInput = page.getByLabel('执行环境 profile')
   await expect(profileInput).toBeVisible()
   await profileInput.fill('')

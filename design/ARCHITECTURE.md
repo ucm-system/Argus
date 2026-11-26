@@ -72,6 +72,7 @@ Argus 是**对内工具**，以下事项已由团队裁决，本文按结论描�
 | **2.0.1** | 2026-11-11 | **UX 收口与 mock 解耦（D-75/D-76）**：① mock-deploy 独立化——探测内置 mock-llm（chart 组件）导出四件套，不再复用 genet-deploy/fake-genet；② `runners.clean_runner` 落库并经 `GET /runners` 回显；③ 详情页「报告」页签取消，终态默认「结果」视图（结论 / runner 明细 / result.json·html·csv 三选一内联渲染 / 产物下载），事件并入「执行细节」；④ UI 重试 = 带参重新提交（`/submit?retry=`），attempt 重放保留在 API；⑤ 提交页服务来源并入 runner 管道卡（第 0 步），provider 卡片化，每行示例可查看/复制/填入；⑥ 管理台 NFS 说明收为按钮+弹窗 |
 | **2.0.2** | 2026-11-11 | **提交页三选一下拉与退役清理**：① 服务来源改为与 runner 行同形态的下拉——Genet（默认）/ Mock / 已有服务（外接三元组），provider 卡片取消（用户裁决：一张卡片一个 deploy runner 太怪）；② `existing-deploy`（与外接语义重复）与改名期并存别名 `service-deploy`/`service-clean` 从目录退役——「已有服务」统一走 service 块，历史 Task 仍按 name@version 解析；③ 整页文件查看器吃满视口高度（预览区 stretch）；④ 结果视图删「runner 明细」卡（与结论重复）；三选一渲染优先度改 **html > csv > json**（用户裁决：完整报告最直观） |
 | **2.0.3** | 2026-11-13 | **D-77：runners 可为 0**——「只验证服务能否启动」（deploy + precheck 探活 + clean）不再要求至少 1 个测试 runner；`deploy` XOR `service` 仍必填其一，上限 200 不变。提交页删除「至少需要 1 个 runner」置灰，空列表给中性说明。另：界面去噪音两轮（规格引用灰字清除、按钮变体约束）、重试回填尾随换行误报修复、编辑器随内容自动长高 |
+| **2.0.6** | 2026-11-26 | **文件预览回归 Task 上下文**：`/tasks/:id/file?path=&attempt=&seq=` 从孤立整页改为覆盖 Task 详情的桌面大弹窗；保留可分享 URL、通用扩展名预览、鉴权下载和关闭返回。所有现有 `/file` 入口共用，不引入 Runner 专属解析 |
 | **2.0.5** | 2026-11-26 | **D-78：提交名称可选**——`task.name` 与 `runners[].name` 均改为可选：Task 名缺省取 Task ID；未命名 runner 的执行行名按解析出的注册表 Runner 名派生（重名追加 `-2`、`-3`…序号，避开用户显式名与 `precheck` 等注入行保留名）。派生名只进执行行（`task_runners` / `tasks.resolved`），`tasks.manifest` 保持提交原文。提交页两个名称输入框去必填（placeholder 提示"留空自动生成"），显式给名时的唯一性 / 保留名 / ≤200 字符（D-58）约束不变 |
 
 ---

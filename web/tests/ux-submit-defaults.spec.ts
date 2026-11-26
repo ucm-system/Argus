@@ -24,6 +24,15 @@ async function openSubmit(page: Page): Promise<void> {
   await expect(page.getByLabel('runner 1 Runner')).toContainText('aisbench', { timeout: 15_000 })
 }
 
+/** 环境变量 / 凭据在「高级配置」折叠区里（#111）：需要先展开 */
+async function openAdvanced(page: Page): Promise<void> {
+  const section = page.getByTestId('advanced-section')
+  if ((await section.getAttribute('open')) === null) {
+    await section.locator('summary').click()
+  }
+  await expect(page.getByTestId('add-env')).toBeVisible()
+}
+
 /** 把 YAML 编辑器内容整体换掉（CodeMirror 是 contenteditable，不能直接 fill） */
 async function replaceYaml(page: Page, text: string): Promise<void> {
   const editor = page.getByLabel('部署描述 YAML')
@@ -39,21 +48,22 @@ test('② 提交页默认值全空：Task 名 / runner 名 / 参数 / env / secr
 
   const taskName = page.getByLabel('Task 名称')
   await expect(taskName).toHaveValue('')
-  await expect(taskName).toHaveAttribute('placeholder', '如 qwen3-32b-daily（留空自动生成）')
+  await expect(taskName).toHaveAttribute('placeholder', '如 qwen3-32b-daily')
 
   const runnerName = page.getByLabel('runner 1 名称')
   await expect(runnerName).toHaveValue('')
-  await expect(runnerName).toHaveAttribute('placeholder', '如 accuracy-dataset-a（留空自动生成）')
+  await expect(runnerName).toHaveAttribute('placeholder', '如 accuracy-dataset-a')
 
   // 参数不再预填 `--dataset=/data/gsm8k.jsonl --limit=200`：值是空的，示例只在灰字里
   const args = page.getByLabel('runner 1 输入')
   await expect(args).toHaveValue('')
   await expect(args).toHaveAttribute('placeholder', /\"dataset\"/)
 
-  // 环境变量 / 凭据引用默认 0 行（不再预填 LOG_LEVEL=info 与 ENDPOINT_API_KEY）
+  // 环境变量 / 凭据引用默认 0 行（不再预填 LOG_LEVEL=info 与 ENDPOINT_API_KEY）；折叠在高级配置里
+  await openAdvanced(page)
   await expect(page.getByLabel('env 键 1')).toHaveCount(0)
   await expect(page.getByLabel('secret 键 1')).toHaveCount(0)
-  await expect(page.getByTestId('env-empty-hint')).toBeVisible()
+  await expect(page.getByTestId('env-empty-hint')).toHaveCount(0)
 
   // placeholder 是灰字（用 fg-3 令牌，与正文颜色不同）
   const colors = await taskName.evaluate((el) => {
@@ -87,20 +97,18 @@ test('③ runner 行的示例块：点开看全文，「填入输入框」覆盖
   const args = page.getByLabel('runner 1 输入')
   await expect(args).toHaveValue('')
 
-  // 示例块跟当前 Runner 走：默认折叠，点开看全文（用户 2026-11-11：示例要能查看、能复制）
-  const example = page.getByTestId('input-1-example')
-  await expect(example).toBeVisible()
-  await expect(example).not.toHaveAttribute('open', '')
-  await example.locator('summary').click()
-  await expect(example).toContainText('"dataset":"/data/gsm8k.jsonl"')
+  // 就地按钮与「格式化」同级，不需要先展开示例面板。
+  const fill = page.getByTestId('input-1-fill-example')
+  await expect(fill).toBeVisible()
+  await expect(fill).toHaveText('填入示例')
 
   // 填入输入框：覆盖当前输入（不是追加）
-  await example.getByTestId('input-1-fill-example').click()
+  await fill.click()
   await expect(args).toHaveValue(/"dataset"/)
 
   // 已有内容被覆盖要可撤销（不静默丢失）：先写点内容，再填入一次，撤销回刚才的内容
   await args.fill('{"dataset":"/data/other.jsonl","limit":1}')
-  await example.getByTestId('input-1-fill-example').click()
+  await fill.click()
   await expect(args).toHaveValue(/gsm8k/)
   const toast = page.locator('[data-sonner-toaster]')
   await expect(toast).toContainText('已填入示例')
@@ -198,8 +206,21 @@ test('⑤ YAML 语法错误：报错带行列，修好后标记消失', async ({
   await expect(page.locator('.cm-yaml-error-dot').first()).toBeVisible()
 
   await replaceYaml(page, 'provider: genet\nparameters:\n  model: Qwen3-32B')
-  await expect(error).toHaveAttribute('data-state', 'ok')
+  // 修复后只保留编辑器本身，不再用常驻成功文案解释状态。
+  await expect(error).toHaveCount(0)
   await expect(page.locator('.cm-yaml-error-mark')).toHaveCount(0)
+})
+
+test('⑤b 空白 YAML 不误报就绪；就地示例按钮可一键填入', async ({ page }) => {
+  await openSubmit(page)
+
+  const check = page.getByTestId('submit-check-service')
+  await expect(check).toContainText('部署描述尚未填写')
+  await expect(page.getByText('✓ 语法有效')).toHaveCount(0)
+
+  await page.getByTestId('deploy-fill-example').click()
+  await expect(page.getByLabel('部署描述 YAML')).toContainText('model: Qwen3-32B')
+  await expect(check).toContainText('平台部署 genet-deploy')
 })
 
 /* ============================================================ 6. 页脚 API 链接 */
@@ -270,7 +291,7 @@ test('⑦ 404 主视觉是图片（webp，装饰性 alt 为空）；没有残留
   // 用户 2026-11-09：404 的主元素换成提供的插画（public/404.webp，760px / 69KB）
   const art = page.getByTestId('not-found-art')
   await expect(art).toBeVisible()
-  await expect(art).toHaveAttribute('src', '/404.webp')
+  await expect(art).toHaveAttribute('src', '/argus-assistant.webp')
 
   // 装饰性插画：alt 为空 + aria-hidden；页面身份由 h1 里的「404」承担
   await expect(art).toHaveAttribute('alt', '')
