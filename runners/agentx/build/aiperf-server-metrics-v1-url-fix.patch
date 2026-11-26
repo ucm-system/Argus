@@ -1,0 +1,602 @@
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 4b7a22b..101b3c5 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -182,7 +182,7 @@ The Server Metrics Manager collects metrics from Prometheus-compatible endpoints
+ 
+ **Key Responsibilities:**
+ - Collecting metrics from Prometheus-compatible endpoints (inference server application metrics, system metrics, custom metrics)
+-- Auto-discovering metrics endpoints from configured inference server URLs (`--url`)
++- Auto-discovering metrics endpoints from configured inference server URLs (`--url`), dropping a trailing OpenAI API version segment (`/v1`) and retrying the origin-root `/metrics` once when the derived path answers non-200
+ - Supporting custom Prometheus endpoints via `--server-metrics` flag
+ - Parsing any metrics exposed in Prometheus format (gauges, counters, histograms)
+ - Typical metrics collected: inference server KV cache usage, request counts, latencies, batch sizes, model-specific metrics, and server resource metrics
+diff --git a/docs/server-metrics/server-metrics.md b/docs/server-metrics/server-metrics.md
+index 75c7fdc..edeec34 100644
+--- a/docs/server-metrics/server-metrics.md
++++ b/docs/server-metrics/server-metrics.md
+@@ -12,7 +12,7 @@ AIPerf automatically collects metrics from Prometheus-compatible endpoints expos
+ 
+ | Feature | Description | Default |
+ |---------|-------------|---------|
+-| **Auto-discovery** | Automatically finds `/metrics` endpoint on server URL | Enabled |
++| **Auto-discovery** | Automatically finds `/metrics` on the server URL's serving prefix (an OpenAI `/v1` base is normalized away) | Enabled |
+ | **Collection** | Scrapes metrics every 333ms during benchmark | Enabled |
+ | **Outputs** | JSON (aggregated), CSV (tabular), JSONL (time-series), Parquet (cumulative deltas) | JSON + CSV + Parquet |
+ | **Custom endpoints** | `--server-metrics URL [URL...]` for additional endpoints | None |
+@@ -152,7 +152,7 @@ aiperf profile \
+ ```
+ 
+ AIPerf automatically:
+-1. Discovers the `/metrics` endpoint on your inference server (base URL + `/metrics`)
++1. Discovers the `/metrics` endpoint on your inference server (base URL + `/metrics`). A trailing OpenAI API version segment is dropped first, so `--url http://host:8000/v1` scrapes `http://host:8000/metrics`, not the 404-ing `/v1/metrics`; see [Compatibility & auto-disable](#compatibility--auto-disable) for the root-`/metrics` fallback when the derived path still misses
+ 2. Tests endpoint reachability before profiling starts
+ 3. Captures baseline metrics before warmup period begins (reference point for deltas) — also where AIPerf first parses the response and validates it as Prometheus exposition format; see [Compatibility & auto-disable](#compatibility--auto-disable) for what happens when an endpoint returns non-Prometheus content
+ 4. Collects metrics at configurable intervals during warmup and profiling
+@@ -230,6 +230,15 @@ AIPerf scrapes `/metrics` at ~3 Hz and parses the response as Prometheus exposit
+ - the HTTP `Content-Type` is `application/json` (the response body is never read in this case — the rejection is cheaper than parsing); or
+ - the body fails to parse as Prometheus exposition format (`prometheus_client.parser.text_string_to_metric_families` raises `ValueError` — e.g. a server returns `text/plain` with garbage, or a JSON body without a content-type).
+ 
++**Wrong-path fallback to origin-root `/metrics`.** The scraped URL is derived from your `--url`, so it can point at an API sub-path the normalizer cannot recognize — most often a complete inference URL passed as `--url` (e.g. `http://host:8000/v1/chat/completions`, which derives `.../v1/chat/completions/metrics`). OpenAI-compatible servers expose Prometheus at the origin root, so when the derived path answers non-200 during the reachability probe, AIPerf tries `http://host:8000/metrics` once and keeps scraping it if it responds:
++
++```text
++Metrics path 'http://127.0.0.1:8000/v1/chat/completions/metrics' answered HTTP 404;
++using 'http://127.0.0.1:8000/metrics' instead.
++```
++
++Explicitly configured non-`/metrics` paths (e.g. `--server-metrics http://host/stats`) are never overridden.
++
+ **TRT-LLM `/prometheus/metrics` fallback.** Before disabling, AIPerf probes `<base>/prometheus/metrics` exactly once — TRT-LLM mounts the proper Prometheus path there when launched with `return_perf_metrics: true` (see the TRT-LLM entry in the [Quick Reference table](#quick-reference) above). If the probe succeeds, the collector swaps its URL there and the run continues with the alt endpoint. The probe is attempted whenever the configured URL ends with `/metrics` and is not already `/prometheus/metrics` itself — so `/metrics`, `/v1/metrics`, and `/api/metrics` all trigger the fallback probe. URLs that don't end in `/metrics` (e.g. `/stats`, `/telemetry`) are left untouched, and `/prometheus/metrics` is excluded to avoid probing the same path it would swap to.
+ 
+ **On auto-disable.** A single `WARNING` is emitted naming the endpoint and the suppression flag. Subsequent scrape cycles short-circuit, the collector emits no further log noise, and the rest of the benchmark proceeds normally — other configured endpoints (DCGM telemetry, additional `--server-metrics` URLs) are unaffected.
+@@ -644,6 +653,7 @@ AIPerf automatically infers units from metric names and descriptions using stand
+ | OOM crashes | `vllm:kv_cache_usage_perc` approaching 1.0 | Reduce `max_model_len` or increase `gpu_memory_utilization` |
+ | Low throughput | `vllm:num_requests_running` vs `vllm:num_requests_waiting` | Low both = client bottleneck; high waiting = server bottleneck |
+ | Endpoint unreachable | `curl http://localhost:8000/metrics` or `curl http://localhost:8002/metrics` for Triton | Check server running, network, firewall; use explicit `--server-metrics` URL |
++| `Server metrics disabled - no Prometheus endpoints reachable: <url> (HTTP 404)` | `curl -i <url>` from the log line | The derived path is not a metrics mount. Point `--url` at the server root (vLLM: `http://host:8000`) or pass the real path with `--server-metrics http://host:8000/metrics`. A `(no response)` detail instead of an HTTP status means nothing is listening there (host, port, or firewall). |
+ | `WARNING ... non-Prometheus content-type 'application/json'` | `curl -i <base>/metrics` shows `Content-Type: application/json` | Server isn't serving Prometheus at `/metrics`. For TRT-LLM, set `return_perf_metrics: true` in `extra_llm_api_options.yaml` so AIPerf's auto-probe finds `/prometheus/metrics`. To silence the warning entirely, pass `--no-server-metrics`. See [Compatibility & auto-disable](#compatibility--auto-disable). |
+ 
+ ---
+diff --git a/src/aiperf/common/metric_utils.py b/src/aiperf/common/metric_utils.py
+index 6ede8cd..52f8c36 100644
+--- a/src/aiperf/common/metric_utils.py
++++ b/src/aiperf/common/metric_utils.py
+@@ -1,14 +1,30 @@
+ # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ # SPDX-License-Identifier: Apache-2.0
+ 
++import re
++from urllib.parse import urlsplit, urlunsplit
++
++# OpenAI-compatible API version segment (``/v1``, ``/v2``, ...) as an entire
++# trailing path segment. Such a segment addresses an inference API, never a
++# Prometheus mount point.
++_API_VERSION_SEGMENT_RE = re.compile(r"/v\d+$")
++
++_METRICS_PATH = "/metrics"
++
+ 
+ def normalize_metrics_endpoint_url(url: str) -> str:
+     """Ensure metrics endpoint URL has a scheme and ends with /metrics suffix.
+ 
+-    Works with Prometheus, DCGM, and other compatible endpoints.
+-    This utility is used by both TelemetryManager and ServerMetricsManager
+-    to ensure consistent URL formatting. If the URL does not start with
+-    "http://" or "https://", "http://" is prepended.
++    Works with Prometheus, DCGM, and other compatible endpoints. If the URL does
++    not start with "http://" or "https://", "http://" is prepended.
++
++    A trailing OpenAI-compatible API version segment ("/v1", "/v2", ...) is
++    dropped first: users routinely pass the inference base URL they configured
++    the server with (e.g. vLLM's ``http://host:8000/v1``), and every supported
++    server exposes Prometheus exposition at the serving prefix plus
++    ``/metrics`` — never under the API version path. Without the strip,
++    auto-discovery scraped ``http://host:8000/v1/metrics``, got HTTP 404, and
++    reported "no Prometheus endpoints reachable".
+ 
+     Args:
+         url: Base URL or full metrics URL (e.g., "http://localhost:9400" or
+@@ -16,7 +32,8 @@ def normalize_metrics_endpoint_url(url: str) -> str:
+ 
+     Returns:
+         URL with an http/https scheme, ending with /metrics, with trailing
+-        slashes removed (e.g., "http://localhost:9400/metrics")
++        slashes and any trailing API version segment removed (e.g.,
++        "http://localhost:9400/metrics")
+ 
+     Raises:
+         ValueError: If URL is empty or whitespace-only
+@@ -26,6 +43,8 @@ def normalize_metrics_endpoint_url(url: str) -> str:
+         "http://localhost:9400/metrics"
+         >>> normalize_metrics_endpoint_url("localhost:9400")
+         "http://localhost:9400/metrics"
++        >>> normalize_metrics_endpoint_url("http://localhost:8000/v1")
++        "http://localhost:8000/metrics"
+         >>> normalize_metrics_endpoint_url("http://localhost:9400/metrics")
+         "http://localhost:9400/metrics"
+     """
+@@ -35,7 +54,9 @@ def normalize_metrics_endpoint_url(url: str) -> str:
+     if not url.startswith(("http://", "https://")):
+         url = f"http://{url}"
+ 
+-    url = url.rstrip("/")
+-    if not url.endswith("/metrics"):
+-        url = f"{url}/metrics"
+-    return url
++    split = urlsplit(url)
++    path = split.path.rstrip("/")
++    if not path.endswith(_METRICS_PATH):
++        path = _API_VERSION_SEGMENT_RE.sub("", path) + _METRICS_PATH
++
++    return urlunsplit((split.scheme, split.netloc, path, split.query, split.fragment))
+diff --git a/src/aiperf/common/mixins/base_metrics_collector_mixin.py b/src/aiperf/common/mixins/base_metrics_collector_mixin.py
+index e71dd87..542e73c 100644
+--- a/src/aiperf/common/mixins/base_metrics_collector_mixin.py
++++ b/src/aiperf/common/mixins/base_metrics_collector_mixin.py
+@@ -266,6 +266,9 @@ class BaseMetricsCollectorMixin(AIPerfLifecycleMixin, ABC, Generic[TRecord]):
+         # (see IncompatibleMetricsEndpointError). Subsequent collection cycles
+         # short-circuit so we don't spam parse failures at the scrape interval.
+         self._endpoint_disabled: bool = False
++        # HTTP status from the most recent reachability probe; None when the
++        # probe failed before any response (refused, timeout, invalid URL).
++        self._last_reachability_status: int | None = None
+         super().__init__(**kwargs)
+ 
+     @property
+@@ -277,6 +280,17 @@ class BaseMetricsCollectorMixin(AIPerfLifecycleMixin, ABC, Generic[TRecord]):
+         """
+         return self._endpoint_url
+ 
++    @property
++    def last_reachability_status(self) -> int | None:
++        """HTTP status of the most recent reachability probe.
++
++        Returns:
++            The probe's HTTP status (e.g. 404), or None when the probe produced
++            no response at all (connection refused, timeout, invalid URL). Lets
++            callers report why an endpoint was deemed unreachable.
++        """
++        return self._last_reachability_status
++
+     @property
+     def collection_interval(self) -> float:
+         """Get the collection interval in seconds.
+@@ -449,8 +463,10 @@ class BaseMetricsCollectorMixin(AIPerfLifecycleMixin, ABC, Generic[TRecord]):
+         Returns:
+             True if endpoint is reachable with HTTP 200
+         """
++        self._last_reachability_status = None
+         try:
+             async with session.get(self._endpoint_url) as response:
++                self._last_reachability_status = response.status
+                 return response.status == 200
+         except (TimeoutError, aiohttp.ClientError) as exc:
+             # Both halves are redacted: the endpoint may embed userinfo, and
+diff --git a/src/aiperf/server_metrics/data_collector.py b/src/aiperf/server_metrics/data_collector.py
+index b484f6b..fdbdeef 100644
+--- a/src/aiperf/server_metrics/data_collector.py
++++ b/src/aiperf/server_metrics/data_collector.py
+@@ -6,6 +6,7 @@ import time
+ from collections import defaultdict
+ from collections.abc import Awaitable, Callable
+ from dataclasses import dataclass, field
++from urllib.parse import urlsplit, urlunsplit
+ 
+ from prometheus_client.metrics_core import Metric
+ from prometheus_client.openmetrics.parser import (
+@@ -93,6 +94,7 @@ class ServerMetricsDataCollector(BaseMetricsCollectorMixin[ServerMetricsRecord])
+     Features:
+         - Async HTTP collection with aiohttp
+         - Prometheus exposition format parsing
++        - Origin-root ``/metrics`` fallback when the derived URL 404s
+         - Callback-based record delivery
+         - Error handling with ErrorDetails
+ 
+@@ -141,6 +143,69 @@ class ServerMetricsDataCollector(BaseMetricsCollectorMixin[ServerMetricsRecord])
+         # collector instance.
+         self._prometheus_fallback_attempted: bool = False
+ 
++    async def is_url_reachable(self) -> bool:
++        """Resolve which path actually serves metrics, then report reachability.
++
++        The configured URL is derived by appending ``/metrics`` to the
++        inference endpoint (see ``normalize_metrics_endpoint_url``), so it can
++        land on a path the server does not serve — e.g. a complete
++        ``.../v1/chat/completions`` URL passed as ``--url`` yields
++        ``.../v1/chat/completions/metrics``. When that path answers non-200,
++        probe the origin-root ``/metrics`` once and keep it if it responds;
++        without this, a stale derived path silently disables server metrics
++        with the uninformative "no Prometheus endpoints reachable".
++
++        Returns:
++            True when the configured URL or the root fallback answers HTTP 200.
++        """
++        if await super().is_url_reachable():
++            return True
++
++        candidate_url = self._root_metrics_candidate()
++        if candidate_url is None:
++            return False
++        return await self._probe_root_metrics(candidate_url)
++
++    def _root_metrics_candidate(self) -> str | None:
++        """Origin-root ``/metrics`` URL, or None when there is nothing to try.
++
++        Only URLs that look like a metrics path are rewritten: a custom path
++        the user configured explicitly (e.g. ``/stats``) is never overridden.
++        """
++        split = urlsplit(self._endpoint_url)
++        path = split.path.rstrip("/")
++        if not split.netloc or path == "/metrics" or not path.endswith("/metrics"):
++            return None
++        return urlunsplit((split.scheme, split.netloc, "/metrics", "", ""))
++
++    async def _probe_root_metrics(self, candidate_url: str) -> bool:
++        """Probe ``candidate_url`` once; keep it on success, restore on failure."""
++        original_url, original_display = self._endpoint_url, self._display_url
++        original_status = self.last_reachability_status
++        candidate_display = redact_url(candidate_url)
++        self._endpoint_url = candidate_url
++        self._display_url = candidate_display
++        reachable = False
++        try:
++            reachable = await super().is_url_reachable()
++        finally:
++            if not reachable:
++                self._endpoint_url = original_url
++                self._display_url = original_display
++                # The caller reports this status against the configured URL, so
++                # restore it instead of leaking the fallback probe's status.
++                self._last_reachability_status = original_status
++        if not reachable:
++            return False
++        original_detail = (
++            f"HTTP {original_status}" if original_status is not None else "no response"
++        )
++        self.info(
++            f"Metrics path {original_display!r} answered {original_detail}; "
++            f"using {candidate_display!r} instead."
++        )
++        return True
++
+     async def _collect_and_process_metrics(self) -> None:
+         """Collect metrics from Prometheus endpoint and process them into ServerMetricsRecord objects.
+ 
+diff --git a/src/aiperf/server_metrics/manager.py b/src/aiperf/server_metrics/manager.py
+index 583e441..c7a95b0 100644
+--- a/src/aiperf/server_metrics/manager.py
++++ b/src/aiperf/server_metrics/manager.py
+@@ -139,6 +139,7 @@ class ServerMetricsManager(BaselineCollectorMixin, BaseComponentService):
+             return
+ 
+         self._collectors.clear()
++        unreachable_endpoints: list[str] = []
+ 
+         for endpoint_url in self._server_metrics_endpoints:
+             self.debug(
+@@ -157,29 +158,37 @@ class ServerMetricsManager(BaselineCollectorMixin, BaseComponentService):
+ 
+             try:
+                 is_reachable = await collector.is_url_reachable()
+-                if is_reachable:
+-                    self._collectors[endpoint_url] = collector
+-                    self.debug(
+-                        lambda url=endpoint_url: (
+-                            f"Server Metrics: Prometheus endpoint {url} is reachable"
+-                        )
+-                    )
+-                else:
+-                    self.debug(
+-                        lambda url=endpoint_url: (
+-                            f"Server Metrics: Prometheus endpoint {url} is not reachable"
+-                        )
+-                    )
+             except Exception as e:
+                 self.error(f"Server Metrics: Exception testing {endpoint_url}: {e}")
++                is_reachable = False
++
++            if is_reachable:
++                self._collectors[endpoint_url] = collector
++                self.debug(
++                    lambda url=endpoint_url: (
++                        f"Server Metrics: Prometheus endpoint {url} is reachable"
++                    )
++                )
++            else:
++                unreachable_endpoints.append(
++                    self._describe_reachability_failure(endpoint_url, collector)
++                )
++                self.debug(
++                    lambda url=endpoint_url: (
++                        f"Server Metrics: Prometheus endpoint {url} is not reachable"
++                    )
++                )
+ 
+         reachable_endpoints = [redact_url(u) for u in self._collectors]
+ 
+         if not self._collectors:
+             # Server metrics manager shutdown occurs in _on_start_profiling to prevent hang
++            reason = "no Prometheus endpoints reachable"
++            if unreachable_endpoints:
++                reason = f"{reason}: {', '.join(unreachable_endpoints)}"
+             await self._send_server_metrics_status(
+                 enabled=False,
+-                reason="no Prometheus endpoints reachable",
++                reason=reason,
+                 endpoints_configured=[
+                     redact_url(u) for u in self._server_metrics_endpoints
+                 ],
+@@ -212,6 +221,20 @@ class ServerMetricsManager(BaselineCollectorMixin, BaseComponentService):
+             endpoints_reachable=reachable_endpoints,
+         )
+ 
++    @staticmethod
++    def _describe_reachability_failure(
++        endpoint_url: str, collector: ServerMetricsDataCollector
++    ) -> str:
++        """Render ``<url> (HTTP 404)`` / ``<url> (no response)`` for a status reason.
++
++        The HTTP status is what tells a 404'd metrics path apart from a server
++        that is not listening at all; without it the disabled-status log says
++        only "no Prometheus endpoints reachable".
++        """
++        status = collector.last_reachability_status
++        detail = f"HTTP {status}" if isinstance(status, int) else "no response"
++        return f"{redact_url(endpoint_url)} ({detail})"
++
+     async def collect_baseline(self, message: PhaseBaselineRequestMessage) -> None:
+         """Capture a one-shot server-metrics scrape for a phase boundary."""
+         if self._server_metrics_disabled or not self._collectors:
+diff --git a/tests/unit/common/test_metric_utils.py b/tests/unit/common/test_metric_utils.py
+index 79f6621..9aee42c 100644
+--- a/tests/unit/common/test_metric_utils.py
++++ b/tests/unit/common/test_metric_utils.py
+@@ -23,12 +23,32 @@ class TestNormalizeMetricsEndpointUrl:
+             ("localhost:9400/", "http://localhost:9400/metrics"),
+             ("localhost:9400/metrics", "http://localhost:9400/metrics"),
+             ("10.0.0.1:9090", "http://10.0.0.1:9090/metrics"),
++            # An OpenAI-compatible API base is not a metrics mount: the trailing
++            # version segment is dropped so vLLM's root /metrics is scraped
++            # instead of the 404-ing /v1/metrics.
++            ("http://localhost:8000/v1", "http://localhost:8000/metrics"),
++            ("http://localhost:8000/v1/", "http://localhost:8000/metrics"),
++            ("localhost:8000/v1", "http://localhost:8000/metrics"),
++            ("https://gateway.example/v2", "https://gateway.example/metrics"),
++            # Serving prefix is preserved; only the API version segment is dropped.
++            ("http://localhost:8000/openai/v1", "http://localhost:8000/openai/metrics"),
++            # An explicit metrics URL is never rewritten.
++            ("http://localhost:8000/v1/metrics", "http://localhost:8000/v1/metrics"),
++            ("http://localhost:8000/custom/metrics", "http://localhost:8000/custom/metrics"),
+         ],
+     )  # fmt: skip
+     def test_normalize_url_variations(self, input_url: str, expected: str):
+         """Test URL normalization handles various input formats correctly."""
+         assert normalize_metrics_endpoint_url(input_url) == expected
+ 
++    def test_normalize_does_not_strip_version_like_hostname(self):
++        """A host named v1 is not a path segment and must survive normalization."""
++        assert normalize_metrics_endpoint_url("http://v1") == "http://v1/metrics"
++        assert (
++            normalize_metrics_endpoint_url("http://v1:9400")
++            == "http://v1:9400/metrics"
++        )
++
+     def test_normalize_injects_http_when_scheme_missing(self):
+         """Scheme-less URLs get http:// prepended so downstream HTTP clients accept them."""
+         assert (
+diff --git a/tests/unit/server_metrics/test_server_metrics_data_collector.py b/tests/unit/server_metrics/test_server_metrics_data_collector.py
+index ea29e7e..55a8f0c 100644
+--- a/tests/unit/server_metrics/test_server_metrics_data_collector.py
++++ b/tests/unit/server_metrics/test_server_metrics_data_collector.py
+@@ -788,6 +788,142 @@ class TestPrometheusFallbackProbe:
+         assert collector._prometheus_fallback_attempted is False
+ 
+ 
++class TestRootMetricsFallbackProbe:
++    """The metrics URL derived from the inference endpoint can point at an API
++    sub-path (``/v1/metrics`` from a ``--url`` ending in ``/v1``, or
++    ``/v1/chat/completions/metrics`` from a complete inference URL). Servers
++    expose Prometheus at the origin root, so a non-200 on the derived path must
++    fall back to ``/metrics`` once rather than silently disabling server
++    metrics with "no Prometheus endpoints reachable".
++    """
++
++    @pytest.mark.asyncio
++    async def test_root_metrics_used_when_derived_path_returns_404(self) -> None:
++        collector = ServerMetricsDataCollector("http://server:60000/v1/metrics")
++
++        async def fake_check(session) -> bool:
++            if collector._endpoint_url.endswith("/v1/metrics"):
++                collector._last_reachability_status = 404
++                return False
++            collector._last_reachability_status = 200
++            return True
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ):
++            assert await collector.is_url_reachable()
++
++        assert collector._endpoint_url == "http://server:60000/metrics"
++        assert collector._display_url == "http://server:60000/metrics"
++        assert collector.last_reachability_status == 200
++
++    @pytest.mark.asyncio
++    async def test_derived_url_restored_when_root_metrics_also_fails(self) -> None:
++        collector = ServerMetricsDataCollector("http://server:60000/v1/metrics")
++
++        async def fake_check(session) -> bool:
++            collector._last_reachability_status = 404
++            return False
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ) as mock_check:
++            assert not await collector.is_url_reachable()
++
++        # One probe for the configured URL, one for the root candidate.
++        assert mock_check.await_count == 2
++        assert collector._endpoint_url == "http://server:60000/v1/metrics"
++        assert collector._display_url == "http://server:60000/v1/metrics"
++
++    @pytest.mark.asyncio
++    async def test_no_root_probe_when_configured_url_is_root_metrics(self) -> None:
++        collector = ServerMetricsDataCollector("http://server:60000/metrics")
++
++        async def fake_check(session) -> bool:
++            collector._last_reachability_status = 404
++            return False
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ) as mock_check:
++            assert not await collector.is_url_reachable()
++
++        assert mock_check.await_count == 1
++
++    @pytest.mark.asyncio
++    async def test_no_root_probe_for_custom_path(self) -> None:
++        """An explicitly configured non-metrics path is never overridden."""
++        collector = ServerMetricsDataCollector("http://server:60000/stats")
++
++        async def fake_check(session) -> bool:
++            collector._last_reachability_status = 404
++            return False
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ) as mock_check:
++            assert not await collector.is_url_reachable()
++
++        assert mock_check.await_count == 1
++        assert collector._endpoint_url == "http://server:60000/stats"
++
++    @pytest.mark.asyncio
++    async def test_root_swap_keeps_credentials_out_of_display_url(self) -> None:
++        collector = ServerMetricsDataCollector(
++            "http://user:secret@server:60000/v1/metrics"
++        )
++
++        async def fake_check(session) -> bool:
++            return collector._endpoint_url.endswith("/metrics") and (
++                "/v1/" not in collector._endpoint_url
++            )
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ):
++            assert await collector.is_url_reachable()
++
++        assert collector._endpoint_url == "http://user:secret@server:60000/metrics"
++        assert "secret" not in collector._display_url
++
++    @pytest.mark.asyncio
++    async def test_status_from_failed_probe_is_reported(self) -> None:
++        """The recorded status lets the manager log HTTP 404 vs no response."""
++        collector = ServerMetricsDataCollector("http://server:60000/v1/metrics")
++
++        async def fake_check(session) -> bool:
++            collector._last_reachability_status = 404
++            return False
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ):
++            assert not await collector.is_url_reachable()
++
++        assert collector.last_reachability_status == 404
++
++    @pytest.mark.asyncio
++    async def test_configured_url_status_survives_failed_root_probe(self) -> None:
++        """The disabled reason names the configured URL, so it must carry that
++        URL's status rather than the throwaway root probe's."""
++        collector = ServerMetricsDataCollector("http://server:60000/v1/metrics")
++
++        async def fake_check(session) -> bool:
++            if collector._endpoint_url.endswith("/v1/metrics"):
++                collector._last_reachability_status = 503
++                return False
++            collector._last_reachability_status = 404
++            return False
++
++        with patch.object(
++            collector, "_check_reachability_with_session", side_effect=fake_check
++        ):
++            assert not await collector.is_url_reachable()
++
++        assert collector._endpoint_url == "http://server:60000/v1/metrics"
++        assert collector.last_reachability_status == 503
++
++
+ class TestAsyncLifecycle:
+     """Test async lifecycle management."""
+ 
+diff --git a/tests/unit/server_metrics/test_server_metrics_manager.py b/tests/unit/server_metrics/test_server_metrics_manager.py
+index 2bec338..0b5e649 100644
+--- a/tests/unit/server_metrics/test_server_metrics_manager.py
++++ b/tests/unit/server_metrics/test_server_metrics_manager.py
+@@ -101,6 +101,23 @@ class TestServerMetricsManagerInitialization:
+             "http://another-endpoint:8081/metrics" in manager._server_metrics_endpoints
+         )
+ 
++    def test_v1_inference_url_discovers_root_metrics(
++        self,
++        cli_config: CLIConfig,
++    ):
++        """An OpenAI API base (vLLM's http://host:8000/v1) is not a metrics
++        mount; discovery must not scrape the 404-ing /v1/metrics."""
++        cli_config = CLIConfig(
++            model_names=["test-model"],
++            endpoint_type=EndpointType.CHAT,
++            urls=["http://localhost:8000/v1"],
++        )
++        manager = ServerMetricsManager(
++            run=make_run_from_cli(cli_config),
++        )
++
++        assert manager._server_metrics_endpoints == ["http://localhost:8000/metrics"]
++
+     def test_duplicate_urls_avoided(
+         self,
+         cli_config: CLIConfig,
+@@ -702,6 +719,40 @@ class TestDisabledServerMetrics:
+         # Should publish disabled status
+         manager.publish.assert_called_once()
+ 
++    @pytest.mark.asyncio
++    async def test_disabled_status_reason_reports_probe_status(
++        self,
++        cfg_with_endpoint: CLIConfig,
++    ):
++        """The disabled-status reason must name the URL and the HTTP status:
++        "no Prometheus endpoints reachable" alone cannot tell a wrong metrics
++        path (HTTP 404) apart from a server that is not listening."""
++        manager = ServerMetricsManager(
++            run=make_run_from_cli(cfg_with_endpoint),
++        )
++        manager.publish = AsyncMock()
++
++        with patch(
++            "aiperf.server_metrics.manager.ServerMetricsDataCollector"
++        ) as mock_collector_class:
++            mock_collector = AsyncMock()
++            mock_collector.is_url_reachable = AsyncMock(return_value=False)
++            mock_collector.last_reachability_status = 404
++            mock_collector_class.return_value = mock_collector
++
++            await manager._profile_configure_command(
++                ProfileConfigureCommand(
++                    service_id=manager.id,
++                    command=CommandType.PROFILE_CONFIGURE,
++                    config={},
++                )
++            )
++
++        status_message = manager.publish.await_args.args[0]
++        assert "no Prometheus endpoints reachable" in status_message.reason
++        assert "localhost:8000" in status_message.reason
++        assert "HTTP 404" in status_message.reason
++
+ 
+ class TestExceptionHandling:
+     """Test exception handling in various scenarios."""

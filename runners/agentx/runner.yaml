@@ -1,0 +1,81 @@
+name: agentx
+version: 1.0.16
+display_name: AgentX 长上下文 agentic 压测
+description: |
+  用 SemiAnalysis InferenceX 的真实 agentic coding trace 语料（393 条 Claude Code 会话，含
+  subagent 分支，约 1.85GB）回放压测被测服务：按录制的时间间隔重放每一轮请求、保留会话前缀以
+  复用服务端 KV cache，输出 TTFT / ITL / 端到端时延 / token 吞吐与前缀缓存命中率。
+
+  高级参数不在本文件声明：**直接写进输入 JSONL 就会生效**（平台对未声明字段放行，缺省值由
+  Runner 兜底）。可用字段：scenario、public_dataset、num_dataset_entries、
+  warmup_requests_per_lane、agentic_cache_warmup_duration、allow_short_run、offline、
+  hf_cache_dir、mmap_cache_dir、keep_cache、use_server_token_count。
+  例：{"concurrency":8,"dataset_dir":"cc-traces","offline":true,"num_dataset_entries":100}
+
+role: test
+on_failure: continue
+entry: ["/runner/run.sh"]
+input_format: jsonl
+image: registry.dev.huawei.com/argus/agentx:latest
+
+resources:
+  cpu: "4"
+  memory: "8Gi"
+  gpu: { resource: nvidia.com/gpu, count: 0 }
+
+concurrency:
+  endpoint_exclusive: true
+
+mounts: []
+exports: []
+consumes: [AG_SERVED_URL, AG_SERVED_MODEL_NAME, AG_MODEL_PATH]
+
+placeholder: '{"concurrency":8,"benchmark_duration_seconds":1800,"dataset_dir": "cc-traces-weka-062126-256k","random_seed":42, "max_context_length": 0}'
+
+parameters:
+  - name: concurrency
+    type: integer
+    required: false
+    default: 8
+    description: |
+      并发会话树数量。生产压测推荐 8~64。
+
+  - name: benchmark_duration_seconds
+    type: integer
+    required: false
+    default: 1800
+    description: |
+      测量时长（秒）。scenario 下限 900 秒，正式对比推荐 1800。
+
+  - name: dataset_dir
+    type: string
+    required: false
+    default: ""
+    description: |
+      已挂载的离线语料目录。可选：cc-traces-weka-062126（长度1m）和 cc_traces_weka_062126-256k（截断长度256k）
+    example: cc_traces_weka_062126-256k
+
+  - name: max_context_length
+    type: integer
+    required: false
+    default: 0
+    description: |
+      客户端上下文过滤：丢掉超过该 token 数的 trace，0 = 不过滤。
+      推荐填被测服务真实的最大上下文，例如 128000。
+
+  - name: random_seed
+    type: integer
+    required: false
+    default: 42
+    description: |
+      随机种子，默认 42。
+
+env:
+  ENDPOINT_API_KEY:
+    required: false
+    secret: true
+    description: "被测服务的 Bearer token；以 --api-key '${ENDPOINT_API_KEY}' 引用形式传入，不落 argv/日志。"
+  HF_TOKEN:
+    required: false
+    secret: true
+    description: "HuggingFace 令牌；gated 仓库或私有语料镜像才需要。"

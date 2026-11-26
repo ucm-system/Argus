@@ -31,7 +31,8 @@
       CCR（可选）：docker login ccr.ccs.tencentyun.com
 
 .PARAMETER Image
-    镜像名。默认按 -Component 推导：argus-server / argus-web / argus-<runner-name>。
+    镜像名。默认按 -Component 推导，与 CI（release.yml 的 argus-${matrix.image}）逐字一致：
+    argus-server / argus-web / argus-runner-<runner-name> / argus-mock-llm。
 
 .PARAMETER Tag
     主 tag；默认 `git describe --tags --always --dirty`，取不到时 `dev-<yyyymmdd>`。
@@ -104,7 +105,9 @@ switch -Regex ($ComponentSpec) {
         }
         $Dockerfile = Join-Path $runnerDir 'build/Dockerfile'
         $BuildContext = $runnerDir          # <-- 与 server/web 不同：上下文 = Runner 根目录
-        $DefaultImage = "argus-$runnerName"
+        # 命名与 CI 一致：release.yml 里 matrix.image = runner-<name>，镜像名 = argus-${matrix.image}
+        # （= argus-runner-<name>）。改成 argus-<name> 会让本地产物与 GHCR 上的产物分成两个仓库。
+        $DefaultImage = "argus-runner-$runnerName"
     }
     '^mockllm$' {
         # tools/mock-llm（OpenAI 兼容假服务，D-75）：不是 runner，但走同一套 kind-local 流

@@ -46,6 +46,13 @@ helm upgrade --install argus deploy/charts/argus -n argus -f values-prod.yaml --
 
 **不创建**（由运维/其它系统负责）：数据库、NFS/RWX 存储、Ingress Controller、Volcano、Genet、IdP。
 
+**需要预置的 PVC**（统一共享挂载只引用 `claimName`，缺了不会 fail-fast：preflight 只打 warning，Runner Job 会一直 `Pending`）：
+
+- `argus-models` → 只读挂到 `/models` 与 `/mnt/model`（模型权重 / 分词器目录）；
+- `argus-dataset` → **可写**挂到 `/data`（语料根；agentx 要在语料目录里生成 `.agentx-split/`，所以不能只读）。
+  共享挂载是整卷、无 `subPath`：语料放 PVC 子目录，Task 里用 `dataset_dir` 选（`"cc-traces"` → `/data/cc-traces`）。
+  权限：目录 `0770`、属主 `10001`；NFS 上 `fsGroup` 无效。
+
 **刻意不授予**（`06 §4.4`，别"顺手补上"）：`secrets get/list/watch`（唯一例外是 rotate 的窄授权，见 `deploy/k8s/gen-secret-rotate-role.ps1`）、`pods/exec|attach|portforward`、`deployments/services/ingresses` 写、`nodes` 写、Volcano 写。
 
 ## 3. 必填项与校验
@@ -74,6 +81,7 @@ Chart 会在**渲染期**直接失败并给出中文原因，不会让你部署�
 | `config.deployTimeout` | `72h` | 部署总窗口，取值 `1h..7d`（`K-6`） |
 | `config.maxGlobalConcurrency` | `20` | 全局并发 Task 上限（超出排队，不拒绝） |
 | `persistence.existingClaim` | `""` | 生产建议给（NFS/CSI 的 RWX claim） |
+| `sharedMounts` | `models` / `model-alt` / `dataset` | 平台级统一共享挂载的**首次启动种子**（导入 `shared_mounts` 表，之后以表为准）；`readOnly` 默认 `true`，数据集这类要写的必须显式 `false` |
 | `persistence.size` | `100Gi` | 动态供给时的容量估算见 `06 §5.4` |
 | `migration.enabled` | `true` | 关掉它就意味着你要自己跑迁移（不推荐） |
 | `ingress.enabled` | `false` | 开时记得配 `proxy-buffering: off`（SSE） |

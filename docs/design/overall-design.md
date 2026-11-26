@@ -392,7 +392,7 @@ flowchart TB
 | Jenkins | 定时提交 Task、查询状态、下载报告 | 修改：退出命令拼装与结果解析，降为普通调用方（REST + 服务令牌） |
 | K8s / Volcano | 起 Job、调度 Pod、gang 与队列；平台**只读**队列与节点视图 | 复用 |
 | NFS（RWX） | `storage-root/{task_id}/attempts/{n}/runners/{seq}/` 即最终落盘位置 | 复用（既有 NFS 能力） |
-| Runner | 能力的唯一载体：镜像 + `runner.yaml` + entry；内置 service-deploy / service-clean / endpoint-probe 随平台发版 | 新增（当前有 `endpoint-probe` 与 `aisbench-sla` 两个可运行实例） |
+| Runner | 能力的唯一载体：镜像 + `runner.yaml` + entry；内置 service-deploy / service-clean / endpoint-probe 随平台发版 | 新增（当前有 `endpoint-probe`、`aisbench-sla`、`agentx` 三个可运行实例） |
 | OIDC 身份源 | 统一身份，三角色 RBAC；服务令牌与用户同权限 | 复用 |
 
 ### 4.6 关键流程图
