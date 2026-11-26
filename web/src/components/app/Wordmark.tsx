@@ -16,7 +16,7 @@ export function Wordmark({
   height?: number
   variant?: 'horizontal' | 'icon'
 }) {
-  const src = variant === 'icon' ? '/argus-icon.png' : '/argus-logo.png'
+  const src = variant === 'icon' ? '/argus-icon.webp' : '/argus-logo.webp'
   // 横版原始比例 ≈ 1944:648（宽:高 ≈ 3:1）；高度 26 时宽度约 78。
   return (
     <img

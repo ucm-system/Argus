@@ -427,7 +427,7 @@ export function ArtifactViewerDialog({
     <Dialog
       open={artifact !== null}
       onClose={onClose}
-      size="lg"
+      size="xl"
       title={<span className="break-all font-mono text-sm">{artifact?.path ?? ''}</span>}
       description={
         artifact
@@ -449,7 +449,7 @@ export function ArtifactViewerDialog({
         ) : null
       }
     >
-      {artifact ? <ArtifactPreviewBody taskId={taskId} artifact={artifact} /> : null}
+      {artifact ? <ArtifactPreviewBody taskId={taskId} artifact={artifact} stretch /> : null}
     </Dialog>
   )
 }

@@ -18,19 +18,13 @@ import { expect, test, type Page } from '@playwright/test'
 test.describe.configure({ mode: 'serial' })
 
 /** mock 种子数据 → 进度单元格的期望文案（口径见 lib/status.ts progressHeadline / resultSegments）。 */
-const EXPECTED_PROGRESS: Record<string, { headline: string; segments: string[] }> = {
-  // 全部成功（6 runner 全 succeeded）
-  't-20261105-0006': { headline: '已结束 6 / 6', segments: ['成功 6'] },
-  // 部分失败：1 失败 + 1 跳过（前序失败），4 成功
-  't-20261105-0003': { headline: '已结束 6 / 6', segments: ['失败 1', '成功 4', '跳过 1'] },
-  // 取消：1 成功 + 1 被终止 + 1 跳过（canceled）
-  't-20261105-0001': { headline: '已结束 3 / 3', segments: ['成功 1', '跳过 1', '取消 1'] },
-  // 运行中（外接）：1 成功 + 1 执行中 + 1 排队
-  't-20261105-0004': { headline: '已结束 1 / 3 · 执行中', segments: ['成功 1', '执行中 1', '待执行 1'] },
-  // 部署排队：deploy runner 在跑（Genet 排队水位），没有已结束 runner —— 不是 "0 / 4"
-  't-20261105-0005': { headline: /部署排队中 · 已等待/, segments: ['执行中 1', '待执行 3'] },
-  // 服务不可用：precheck 失败，2 个测试 runner 跳过
-  't-20261105-0002': { headline: '已结束 5 / 5', segments: ['失败 1', '成功 2', '跳过 2'] },
+const EXPECTED_PROGRESS: Record<string, { headline: string | RegExp }> = {
+  't-20261105-0006': { headline: '已结束 6 / 6' },
+  't-20261105-0003': { headline: '已结束 6 / 6' },
+  't-20261105-0001': { headline: '已结束 3 / 3' },
+  't-20261105-0004': { headline: '已结束 1 / 3 · 执行中' },
+  't-20261105-0005': { headline: /部署排队中 · 已等待/ },
+  't-20261105-0002': { headline: '已结束 5 / 5' },
 }
 
 async function openOverview(page: Page, role = 'operator'): Promise<void> {
@@ -53,13 +47,17 @@ test('① 列表「进度 / 结果」列：六种状态的口径与文案（#114
     } else {
       await expect(cell).toContainText(expected.headline)
     }
-    for (const segment of expected.segments) {
-      await expect(cell).toContainText(segment)
-    }
   }
 
   // 不再出现旧的 `succeeded / total` 冒充进度（如 "1 / 6"）：
   await expect(page.getByTestId('task-progress-t-20261105-0003')).not.toContainText('1 / 6')
+
+  // 低频信息退出表头：结果在详情，Attempt 在详情；提交时间与耗时合并。
+  const headers = page.getByTestId('data-table').locator('thead')
+  await expect(headers).not.toContainText('结果')
+  await expect(headers).not.toContainText('attempt')
+  await expect(headers).toContainText('时间')
+  await expect(page.getByTestId('data-table').locator('tbody tr').first()).toContainText('耗时')
 })
 
 test('② 列表与详情计数互相对应（#114）', async ({ page }) => {
@@ -103,7 +101,7 @@ test('③ 服务来源两形态切换：平台部署 / 已有服务草稿各自�
   const mode = page.getByTestId('source-mode')
   // 默认平台部署（genet-deploy），服务来源信息可读：版本 / clean 注入
   await expect(page.getByTestId('deploy-runner')).toContainText('genet-deploy')
-  await expect(page.getByTestId('deploy-clean-tag')).toContainText('自动注入 clean')
+  await expect(page.getByTestId('deploy-clean-tag')).toContainText('自动清理')
 
   // 平台部署草稿：写一段合法 YAML
   await replaceYaml(page, 'provider: genet\nmodel: Qwen3-32B')
@@ -122,15 +120,15 @@ test('③ 服务来源两形态切换：平台部署 / 已有服务草稿各自�
   await mode.getByRole('button', { name: '已有服务' }).click()
   await expect(page.getByLabel('服务 base URL')).toHaveValue('http://10.0.0.99:8000/v1')
 
-  // 提交检查 chip：URL 已填 → 服务来源已就绪
-  await expect(page.getByTestId('submit-check-service')).toContainText('已就绪')
+  // 提交检查：URL 已填 → 服务配置完成。
+  await expect(page.getByTestId('submit-check-service')).toContainText('URL 已填写')
 })
 
 test('④ 提交检查区：服务来源 / Runner 输入 / 校验三枚 chip（#111）', async ({ page }) => {
   await openSubmit(page)
 
-  await expect(page.getByTestId('submit-check-service')).toContainText('平台部署')
-  await expect(page.getByTestId('submit-check-runners')).toContainText('1 行')
+  await expect(page.getByTestId('submit-check-service')).toContainText('部署描述尚未填写')
+  await expect(page.getByTestId('submit-check-runners')).toContainText('Runner 输入尚未填写')
   await expect(page.getByTestId('submit-check-validate')).toContainText('未校验')
 
   // 校验通过后 chip 变绿（文案换成「校验通过」）
@@ -185,7 +183,7 @@ test('⑥ 失败 Task：阶段 / 影响 / 下一步 +「查看失败日志」主
   // 2) 对后续 runner 的影响（跳过不是 0 也不是成功）
   await expect(verdict).toContainText('跳过 1 个（前序失败，未执行')
   // 3) 下一步
-  await expect(verdict).toContainText('下一步：')
+  await expect(verdict).toContainText('修正输入或环境后重试')
 
   // 主动作：查看失败日志，一步直达失败 runner 的日志
   const primary = page.getByTestId('result-primary-action')

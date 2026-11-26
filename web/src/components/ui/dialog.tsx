@@ -7,6 +7,7 @@ const SIZES = {
   sm: 'max-w-sm',
   md: 'max-w-lg',
   lg: 'max-w-2xl',
+  xl: 'max-w-[1400px]',
 } as const
 
 export interface DialogProps {
@@ -97,6 +98,7 @@ export function Dialog({
             'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2',
             'animate-fade-in flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-overlay',
             SIZES[size],
+            size === 'xl' && 'h-[calc(100vh-3rem)]',
           )}
         >
           <header className="flex items-start gap-3 border-b border-line-soft px-6 py-4">
@@ -122,7 +124,7 @@ export function Dialog({
               </RadixDialog.Close>
             ) : null}
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{children}</div>
+          <div className={cn('min-h-0 flex-1 px-6 py-4', size === 'xl' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto')}>{children}</div>
           {footer ? (
             <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-line-soft px-6 py-4">
               {footer}

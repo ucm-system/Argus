@@ -62,7 +62,7 @@ const FOOTER_LINKS: Array<{ label: string; to: string; icon: typeof List; extern
 
 /** 路由是否命中导航项：`end` 项必须完全相等，其余按路径前缀匹配。 */
 function isItemActive(pathname: string, item: NavItem): boolean {
-  if (item.end) return pathname === item.to
+  if (item.end) return pathname === item.to || (item.to === '/' && (pathname.startsWith('/tasks/') || pathname.startsWith('/runs/')))
   return pathname === item.to || pathname.startsWith(`${item.to}/`)
 }
 

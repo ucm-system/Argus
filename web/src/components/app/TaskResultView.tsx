@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronRight, Download, FileText } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronRight, Download, FileText } from 'lucide-react'
 import { API_BASE, api } from '@/api'
 import { toApiError } from '@/api/client'
 import type { ApiErrorBody, Artifact, RunnerExecution, TaskDetail } from '@/api/types'
@@ -147,104 +147,53 @@ export function TaskResultView({ task }: { task: TaskDetail }) {
   return (
     <>
       {/* 1) 结论：一句话 + 影响 + 下一步 + 主动作（#115 / #116） */}
-      <Card data-testid="task-result-verdict">
-        <CardHeader
-          tone={verdict.tone === 'ok' ? 'ok' : verdict.tone === 'err' ? 'err' : 'muted'}
-          title="结论"
-          sub={`attempt #${task.current_attempt} · 耗时 ${formatDuration(runDuration(task))} · ${formatDateTime(task.finished_at)}`}
-          actions={<TaskStatusBadge status={task.status} />}
-        />
-        <CardBody className="flex flex-col gap-3">
-          <p className="text-sm leading-[22px] text-fg">{verdict.headline}</p>
-          {verdict.explain ? <p className="text-xs leading-[20px] text-fg-2">{verdict.explain}</p> : null}
-          {verdict.next ? (
-            <p className="text-xs leading-[20px] text-fg-2">
-              <span className="font-medium text-fg">下一步：</span>
-              {verdict.next}
-            </p>
-          ) : null}
-
-          {/* 主动作行：成功 → 查看报告 / 查看结果；失败 → 查看失败日志；打包下载永远是次级动作。 */}
-          {artifacts.loading && !artifacts.data ? (
-            <p className="text-xs text-fg-3" role="status">
-              正在确认可展示的结果产物…
-            </p>
-          ) : (
-            <div className="flex flex-wrap items-center gap-2" data-testid="result-actions">
-              {verdict.tone === 'ok' && primaryResultAction ? (
-                <Button
-                  variant="primary"
-                  data-testid="result-primary-action"
-                  icon={<FileText className="size-3.5" aria-hidden />}
-                  onClick={() => navigate(primaryResultAction.href)}
-                >
-                  {primaryResultAction.label}
-                </Button>
-              ) : null}
-              {verdict.tone === 'err' && failedLogUrl ? (
-                <Button
-                  variant="primary"
-                  data-testid="result-primary-action"
-                  icon={<FileText className="size-3.5" aria-hidden />}
-                  onClick={() => navigate(failedLogUrl)}
-                >
-                  查看失败日志
-                </Button>
-              ) : null}
-              {verdict.tone === 'ok' && !primaryResultAction ? (
-                <span className="text-xs leading-[20px] text-fg-3" data-testid="result-no-action-reason">
-                  {noResultReason}
-                </span>
-              ) : null}
-              {verdict.tone === 'err' && !failedLogUrl ? (
-                <span className="text-xs leading-[20px] text-fg-3" data-testid="result-no-action-reason">
-                  没有可定位的失败 runner（失败发生在任务收口阶段）；部署与 runner 日志在「执行细节」页签。
-                </span>
-              ) : null}
-              <Button
-                variant="secondary"
-                data-testid="download-bundle"
-                icon={<Download className="size-3.5" aria-hidden />}
-                onClick={() => void downloadBundle()}
-              >
-                打包下载 .zip
-              </Button>
-            </div>
-          )}
-
-          {/* 诊断信息：原始码 / 退出码 / retryable 保留在此，可复制；不重复占据结论行（#116） */}
-          {verdict.diagnostic ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-md border border-line-soft bg-surface-2 px-3 py-2 text-xs">
-              <span className="text-fg-3">诊断信息</span>
-              <Badge tone="muted" className="font-mono">
-                {verdict.diagnostic.code}
-              </Badge>
-              {verdict.diagnostic.exitCode != null ? (
-                <span className="font-mono text-fg-2">exit {verdict.diagnostic.exitCode}</span>
-              ) : null}
-              {verdict.diagnostic.retryable ? <Badge tone="warn">可重试</Badge> : null}
-              <span className="min-w-0 flex-1 break-all text-fg-2">
-                {stripErrorCodePrefix(verdict.diagnostic.code, verdict.diagnostic.message)}
-              </span>
-            </div>
-          ) : null}
-
-          {/* 计数：与列表「进度 / 结果」列同口径（已结束 = succeeded+failed+skipped+canceled，#114） */}
-          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-            {[
-              ['runner 总数', counts?.total ?? 0],
-              ['已结束', `${ended} / ${counts?.total ?? 0}`],
-              ['成功', counts?.succeeded ?? 0],
-              ['失败', counts?.failed ?? 0],
-              ['跳过', counts?.skipped ?? 0],
-            ].map(([label, value]) => (
-              <div key={String(label)} className="rounded-md border border-line-soft bg-surface-2 px-3 py-2">
-                <dt className="text-xs text-fg-3">{label}</dt>
-                <dd className="mt-1 text-xl font-semibold tabular-nums leading-none text-fg">{value}</dd>
+      <Card data-testid="task-result-verdict" className={verdict.tone === 'ok' ? 'border-success/25' : verdict.tone === 'err' ? 'border-danger/25' : ''}>
+        <div className={verdict.tone === 'ok' ? 'bg-success-weak/70' : verdict.tone === 'err' ? 'bg-danger-weak/70' : 'bg-surface-2'}>
+          <div className="flex flex-wrap items-start gap-4 px-5 py-5">
+            <span className={`grid size-10 shrink-0 place-items-center rounded-full ${verdict.tone === 'ok' ? 'bg-success-weak text-success-text' : verdict.tone === 'err' ? 'bg-danger-weak text-danger-text' : 'bg-surface-3 text-fg-3'}`}>
+              {verdict.tone === 'ok' ? <CheckCircle2 className="size-5" aria-hidden /> : <AlertTriangle className="size-5" aria-hidden />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-semibold text-fg">{verdict.headline}</h2>
+                <TaskStatusBadge status={task.status} />
               </div>
-            ))}
-          </dl>
-        </CardBody>
+              {verdict.explain ? <p className="mt-1 text-sm leading-[22px] text-fg-2">{verdict.explain}</p> : null}
+              {verdict.next ? <p className="mt-1 text-xs leading-[20px] text-fg-2">{verdict.next}</p> : null}
+              <p className="mt-2 text-2xs text-fg-3">Attempt #{task.current_attempt} · 耗时 {formatDuration(runDuration(task))} · {formatDateTime(task.finished_at)}</p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2" data-testid="result-actions">
+              {verdict.tone === 'ok' && primaryResultAction ? <Button variant="primary" data-testid="result-primary-action" icon={<FileText className="size-4" aria-hidden />} onClick={() => navigate(primaryResultAction.href)}>{primaryResultAction.label}</Button> : null}
+              {verdict.tone === 'err' && failedLogUrl ? <Button variant="primary" data-testid="result-primary-action" icon={<FileText className="size-4" aria-hidden />} onClick={() => navigate(failedLogUrl)}>查看失败日志</Button> : null}
+              <Button variant="secondary" data-testid="download-bundle" icon={<Download className="size-4" aria-hidden />} onClick={() => void downloadBundle()}>打包下载</Button>
+            </div>
+          </div>
+          {verdict.tone === 'ok' && !primaryResultAction && !artifacts.loading ? <p className="px-5 pb-4 text-xs text-fg-3" data-testid="result-no-action-reason">{noResultReason}</p> : null}
+          {verdict.tone === 'err' && !failedLogUrl ? <p className="px-5 pb-4 text-xs text-fg-3" data-testid="result-no-action-reason">没有可定位的失败 runner；部署与 runner 日志在「执行细节」页签。</p> : null}
+          {verdict.diagnostic ? (
+            <details className="mx-5 mb-4 rounded-md border border-line-soft bg-surface/70 px-3 py-2 text-xs">
+              <summary className="cursor-pointer text-fg-3">原始诊断信息</summary>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge tone="muted" className="font-mono">{verdict.diagnostic.code}</Badge>
+                {verdict.diagnostic.exitCode != null ? <span className="font-mono text-fg-2">exit {verdict.diagnostic.exitCode}</span> : null}
+                {verdict.diagnostic.retryable ? <Badge tone="warn">可重试</Badge> : null}
+                <span className="min-w-0 flex-1 break-all text-fg-2">{stripErrorCodePrefix(verdict.diagnostic.code, verdict.diagnostic.message)}</span>
+              </div>
+            </details>
+          ) : null}
+        </div>
+        <dl className="grid grid-cols-2 border-t border-line-soft sm:grid-cols-4">
+          {[
+            ['已结束', `${ended} / ${counts?.total ?? 0}`],
+            ['成功', counts?.succeeded ?? 0],
+            ['失败 / 跳过', `${counts?.failed ?? 0} / ${counts?.skipped ?? 0}`],
+            ['总耗时', formatDuration(runDuration(task))],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="border-r border-line-soft px-5 py-4 last:border-r-0">
+              <dt className="text-xs text-fg-3">{label}</dt><dd className="mt-1 text-xl font-semibold tabular-nums leading-none text-fg">{value}</dd>
+            </div>
+          ))}
+        </dl>
       </Card>
 
       {/* 2) runner 结果（deploy/precheck 也要有详情）：全部 runner 一个面板 */}

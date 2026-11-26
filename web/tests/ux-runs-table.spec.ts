@@ -91,7 +91,7 @@ test('② 表头漏斗：勾选提交人后请求带多值参数，行数变化�
   await expect(page.getByTestId('pagination-total')).toBeVisible({ timeout: 15_000 })
   await spyApi(page)
 
-  const trigger = page.getByTestId('facet-trigger-提交人')
+  const trigger = page.locator('[data-testid="facet-trigger-提交人"]:visible')
   await expect(trigger).toHaveAttribute('aria-expanded', 'false')
   await trigger.click()
   await expect(trigger).toHaveAttribute('aria-expanded', 'true')
@@ -243,7 +243,7 @@ test('⑥ 列筛选候选值随其它列变化（facets 每次筛选都重拉）
   await page.keyboard.press('Escape')
 
   // 筛一个只有部分状态的提交人 → 状态候选值应当减少
-  await page.getByTestId('facet-trigger-提交人').click()
+  await page.locator('[data-testid="facet-trigger-提交人"]:visible').click()
   await page.getByTestId('facet-option-提交人-dev').locator('input[type="checkbox"]').check()
   await page.getByTestId('facet-apply-提交人').click()
   await expect(page).toHaveURL(/submitter=/)

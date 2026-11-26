@@ -552,37 +552,19 @@ export function TaskDetailPage() {
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
-        <Link to="/">
-          <Button size="sm" variant="ghost" icon={<ArrowLeft className="size-3" aria-hidden />}>
-            返回概览
-          </Button>
-        </Link>
-        {detail && !terminal ? (
-          <Button
-            size="sm"
-            variant="dangerGhost"
-            data-testid="cancel-task"
-            disabled={Boolean(blocked)}
-            title={blocked ?? undefined}
-            onClick={() => setConfirmOpen(true)}
-          >
-            取消 Task
-          </Button>
-        ) : null}
-        {detail && terminal ? (
-          <Button
-            size="sm"
-            variant="secondary"
-            data-testid="retry-task"
-            disabled={Boolean(retryBlocked)}
-            title={retryBlocked ?? '把参数带回提交页，修改后生成新 Task'}
-            onClick={confirmRetry}
-          >
-            重试
-          </Button>
-        ) : null}
-        <span className="ml-auto font-mono text-2xs text-fg-3">{taskId}</span>
+      <div className="flex flex-wrap items-start gap-5 pb-1">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="font-mono text-xl font-semibold tracking-[-0.02em] text-fg">{taskId}</h1>
+            {detail ? <TaskStatusBadge status={detail.status} /> : null}
+          </div>
+          {detail ? <p className="mt-1.5 text-sm text-fg-3">{detail.name} · Attempt #{detail.current_attempt || '—'} · {formatDateTime(detail.submitted_at)}</p> : null}
+        </div>
+        <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+          <Link to="/"><Button variant="ghost" icon={<ArrowLeft className="size-4" aria-hidden />}>返回概览</Button></Link>
+          {detail && !terminal ? <Button variant="dangerGhost" data-testid="cancel-task" disabled={Boolean(blocked)} title={blocked ?? undefined} onClick={() => setConfirmOpen(true)}>取消 Task</Button> : null}
+          {detail && terminal ? <Button variant="secondary" data-testid="retry-task" disabled={Boolean(retryBlocked)} title={retryBlocked ?? '把参数带回提交页，修改后生成新 Task'} onClick={confirmRetry}>修改并重新提交</Button> : null}
+        </div>
       </div>
 
       {/* 断线横幅（主内容顶部）：连接态与事件区同源，恢复后自动消失 */}
@@ -627,7 +609,7 @@ export function TaskDetailPage() {
                 ]
               : [{ value: 'detail', label: '执行细节' }]
           }
-          className="rounded-xl border border-line bg-surface px-3 pt-1 shadow-xs"
+          className="gap-6 border-b border-line bg-transparent px-0 shadow-none"
         />
       ) : null}
 

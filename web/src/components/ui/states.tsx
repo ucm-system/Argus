@@ -1,5 +1,5 @@
 import type { HTMLAttributes, ReactNode } from 'react'
-import { AlertTriangle, Inbox, RefreshCw } from 'lucide-react'
+import { AlertTriangle, RefreshCw } from 'lucide-react'
 import type { ApiErrorBody } from '@/api/types'
 import { detailToText } from '@/lib/utils'
 import { cn } from '@/lib/utils'
@@ -19,9 +19,11 @@ export interface EmptyStateProps extends Omit<HTMLAttributes<HTMLDivElement>, 't
 export function EmptyState({ title, description, action, icon, className, ...rest }: EmptyStateProps) {
   return (
     <div className={cn('flex flex-col items-center justify-center gap-2 px-6 py-12 text-center', className)} {...rest}>
-      <span className="grid size-10 place-items-center rounded-full bg-surface-3 text-fg-3" aria-hidden>
-        {icon ?? <Inbox className="size-4" />}
-      </span>
+      {icon ? (
+        <span className="grid size-10 place-items-center rounded-full bg-surface-3 text-fg-3" aria-hidden>{icon}</span>
+      ) : (
+        <img src="/argus-assistant.webp" alt="" aria-hidden className="mb-1 size-20 select-none object-contain" draggable={false} />
+      )}
       <p className="text-sm font-medium text-fg-2">{title}</p>
       {description ? <p className="max-w-md text-xs leading-[16px] text-fg-3">{description}</p> : null}
       {action ? <div className="mt-2">{action}</div> : null}

@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { PAGE_SIZES, Pagination } from '@/components/ui/pagination'
 import { TableSkeleton } from '@/components/ui/skeleton'
 import { EmptyState, ErrorState } from '@/components/ui/states'
-import { progressHeadline, resultSegments, taskStatusMeta } from '@/lib/status'
+import { progressHeadline, taskStatusMeta } from '@/lib/status'
 import { formatDateTime, formatDuration, formatRelative, runDuration } from '@/lib/utils'
 
 /**
@@ -58,7 +58,7 @@ function pickPageSize(raw: string | null): number {
   return (PAGE_SIZES as readonly number[]).includes(value) ? value : DEFAULT_PAGE_SIZE
 }
 
-/** 「进度 / 结果」两行单元格（#114：进度 = 已结束/总数；结果 = 失败/成功/跳过/取消/执行中/待执行分段）。 */
+/** 进度与结论分列：条形图只表达完成比例，不参与成功/失败判定。 */
 function ProgressCell({ task }: { task: Task }) {
   const headline = progressHeadline({
     status: task.status,
@@ -66,27 +66,17 @@ function ProgressCell({ task }: { task: Task }) {
     deployPhase: task.deploy?.phase ?? null,
     deployWaitedSeconds: task.deploy?.waited_seconds ?? null,
   })
-  const segments = resultSegments(task.runner_counts)
-  const SEGMENT_TONE: Record<string, string> = {
-    failed: 'text-danger-text font-medium',
-    succeeded: 'text-success-text',
-    skipped: 'text-warn-text',
-    canceled: 'text-fg-3',
-    running: 'text-primary-text',
-    pending: 'text-fg-3',
-  }
+  const counts = task.runner_counts
+  const ended = (counts?.succeeded ?? 0) + (counts?.failed ?? 0) + (counts?.skipped ?? 0) + (counts?.canceled ?? 0)
+  const total = counts?.total ?? 0
+  const percent = total > 0 ? Math.round((ended / total) * 100) : 0
+  const tone = task.status === 'failed' || task.status === 'service_unavailable' ? 'bg-danger' : task.status === 'succeeded' ? 'bg-success' : 'bg-primary'
   return (
-    <div className="flex min-w-[9.5rem] flex-col gap-0.5" data-testid={`task-progress-${task.id}`}>
+    <div className="min-w-[8rem]" data-testid={`task-progress-${task.id}`}>
       <span className="whitespace-nowrap text-xs font-medium text-fg">{headline}</span>
-      {segments.length > 0 ? (
-        <span className="flex flex-wrap gap-x-2 whitespace-nowrap text-xs leading-[18px]">
-          {segments.map((segment) => (
-            <span key={segment.key} className={SEGMENT_TONE[segment.key]}>
-              {segment.label} {segment.count}
-            </span>
-          ))}
-        </span>
-      ) : null}
+      <div className="mt-2 h-1.5 w-24 overflow-hidden rounded-full bg-surface-3" aria-hidden>
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${percent}%` }} />
+      </div>
     </div>
   )
 }
@@ -208,21 +198,12 @@ export function TasksTable() {
       {
         id: 'id',
         header: 'Task',
-        meta: { className: 'whitespace-nowrap font-mono text-xs' },
+        meta: { className: 'min-w-[12rem]' },
         cell: ({ row }) => (
-          <Link to={`/tasks/${row.original.id}`} className="text-primary-text hover:underline">
-            {row.original.id}
+          <Link to={`/tasks/${row.original.id}`} className="group block max-w-[18rem] text-fg hover:text-primary-text">
+            <span className="block truncate font-medium leading-5 group-hover:underline" title={row.original.name}>{row.original.name}</span>
+            <span className="block font-mono text-2xs font-normal leading-4 text-fg-3">{row.original.id}</span>
           </Link>
-        ),
-      },
-      {
-        id: 'name',
-        header: '名称',
-        meta: { className: 'max-w-[14rem]' },
-        cell: ({ row }) => (
-          <span className="block max-w-[14rem] truncate" title={row.original.name}>
-            {row.original.name}
-          </span>
         ),
       },
       {
@@ -242,30 +223,16 @@ export function TasksTable() {
         cell: ({ row }) => <TaskStatusBadge status={row.original.status} />,
       },
       {
-        // #114：进度（已结束/总数 + 当前卡点）与结果（失败/成功/跳过/取消分段）分开表达，
-        // 不再用 `succeeded / total` 冒充"runner 进度"。
         id: 'runners',
-        header: '进度 / 结果',
+        header: '执行进度',
         meta: { className: 'whitespace-nowrap' },
         cell: ({ row }) => <ProgressCell task={row.original} />,
-      },
-      {
-        id: 'attempt',
-        header: 'attempt',
-        meta: { className: 'whitespace-nowrap tabular-nums' },
-        cell: ({ row }) => (row.original.current_attempt === 0 ? '—' : `#${row.original.current_attempt}`),
-      },
-      {
-        id: 'duration',
-        header: '耗时',
-        meta: { className: 'whitespace-nowrap tabular-nums' },
-        cell: ({ row }) => formatDuration(runDuration(row.original)),
       },
       {
         id: 'submitter',
         header: FACET_LABEL.submitter,
         meta: {
-          className: 'whitespace-nowrap',
+          className: 'hidden whitespace-nowrap min-[1440px]:table-cell',
           filter: (
             <FacetFilter
               label={FACET_LABEL.submitter}
@@ -279,10 +246,13 @@ export function TasksTable() {
       },
       {
         id: 'submitted_at',
-        header: '提交时间',
+        header: '时间',
         meta: { className: 'whitespace-nowrap text-2xs text-fg-3' },
         cell: ({ row }) => (
-          <span title={formatRelative(row.original.submitted_at)}>{formatDateTime(row.original.submitted_at)}</span>
+          <span className="block" title={formatRelative(row.original.submitted_at)}>
+            <span className="block text-fg-2">{formatDateTime(row.original.submitted_at)}</span>
+            <span className="mt-0.5 block text-fg-3">耗时 {formatDuration(runDuration(row.original))}</span>
+          </span>
         ),
       },
     ],
@@ -306,6 +276,20 @@ export function TasksTable() {
           }
           actions={
             <div className="flex flex-wrap items-center gap-2">
+              <span className="min-[1440px]:hidden">
+                <FacetFilter
+                  label={FACET_LABEL.submitter}
+                  selected={filters.submitter}
+                  buckets={facets?.submitter ?? []}
+                  onApply={(values) => applyFacet('submitter', values)}
+                />
+              </span>
+              <FacetFilter
+                label={FACET_LABEL.runner}
+                selected={filters.runner}
+                buckets={facets?.runner ?? []}
+                onApply={(values) => applyFacet('runner', values)}
+              />
               <div className="relative">
                 <Search
                   className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-3"
@@ -317,25 +301,12 @@ export function TasksTable() {
                   placeholder="在当前页查找名称 / ID"
                   aria-label="在当前页查找名称 / ID"
                   title="查找只在当前页内进行，不跨页"
-                  className="h-9 w-64 pl-8"
+                  className="h-9 w-72 pl-9"
                 />
               </div>
             </div>
           }
         />
-
-        {/* 按 Runner 筛选：候选值与计数来自 /tasks/facets */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-line-soft px-5 py-2 text-2xs text-fg-3">
-          <FacetFilter
-            label={FACET_LABEL.runner}
-            selected={filters.runner}
-            buckets={facets?.runner ?? []}
-            onApply={(values) => applyFacet('runner', values)}
-          />
-          {filters.runner.length > 0 ? (
-            <span className="font-mono text-fg-2">{filters.runner.join('、')}</span>
-          ) : null}
-        </div>
 
         {anyFilter ? (
           <div className="flex flex-wrap items-center gap-2 border-b border-line-soft bg-surface-2 px-5 py-2 text-2xs text-fg-3">

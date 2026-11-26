@@ -18,7 +18,7 @@ test('① 非法提交：摘要滚进视口 + issues 逐条 + trace_id 可复制
 
   // 造一个前端会拦下的提交（D-78 后 name 不再必填）：切「已有服务」形态，服务 URL 留空
   await page.getByTestId('source-mode').getByRole('button', { name: '已有服务' }).click()
-  await page.getByRole('button', { name: '提交', exact: true }).click()
+  await page.getByTestId('submit-task').click()
 
   const summary = page.getByTestId('form-error-summary')
   await expect(summary).toBeVisible({ timeout: 15_000 })
@@ -106,7 +106,7 @@ test('③ toast（sonner）仍保留 role=status 无障碍语义', async ({ page
   // 默认值是空的（用户要求只留 placeholder）：先填出一个能提交的表单
   await page.getByLabel('Task 名称').fill('toast-semantics')
   await page.getByLabel('runner 1 名称').fill('accuracy-dataset-a')
-  await page.getByRole('button', { name: '提交', exact: true }).click()
+  await page.getByTestId('submit-task').click()
   // 提交成功会跳详情并弹 toast（B8：一条「已受理 <run_id> · N 个 Task 已入队」+ 两个动作）
   await expect(page).toHaveURL(/\/tasks\/[^/]+$/, { timeout: 20_000 })
   // sonner 的实时区（aria-live=polite）里要能看到这条成功提示

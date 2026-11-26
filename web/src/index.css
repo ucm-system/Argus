@@ -92,10 +92,10 @@
      没定义就会渲染成透明/继承（组件"看着像没样式"）。值取 shadcn neutral 默认。 */
   --color-sidebar: oklch(0.985 0 0);
   --color-sidebar-foreground: oklch(0.145 0 0);
-  --color-sidebar-primary: oklch(0.205 0 0);
-  --color-sidebar-primary-foreground: oklch(0.985 0 0);
-  --color-sidebar-accent: oklch(0.97 0 0);
-  --color-sidebar-accent-foreground: oklch(0.205 0 0);
+  --color-sidebar-primary: var(--color-primary);
+  --color-sidebar-primary-foreground: var(--color-primary-fg);
+  --color-sidebar-accent: var(--color-primary-weak);
+  --color-sidebar-accent-foreground: var(--color-primary-text);
   --color-sidebar-border: oklch(0.922 0 0);
   --color-sidebar-ring: oklch(0.708 0 0);
   --color-chart-1: oklch(0.646 0.222 41.116);

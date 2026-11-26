@@ -56,9 +56,10 @@ test('② 结果视图：结论 + runner 明细 + 测试结果（三选一渲染
   expect(await downloads.count()).toBeGreaterThan(3)
   await expect(page.getByText('report.json', { exact: false }).first()).toBeVisible()
 
-  // 产物的「查看」进整页查看器（不再弹窗、不再裸链 API URL）
+  // 产物「查看」保留可分享 URL，同时在当前 Task 上打开弹窗。
   await page.locator('[data-testid="artifact-view"]').first().click()
   await expect(page).toHaveURL(/\/file\?path=/, { timeout: 15_000 })
+  await expect(page.getByRole('dialog')).toBeVisible()
 })
 
 test('③ 测试结果内联渲染 result.json 指标（不编数据；deploy/clean 不进该卡）', async ({ page }) => {

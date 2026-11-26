@@ -416,8 +416,8 @@ const MENU_BUTTON_VARIANTS = {
 } as const
 
 const MENU_BUTTON_SIZES = {
-  default: 'h-8 text-sm',
-  sm: 'h-7 text-xs',
+  default: 'h-9 text-sm',
+  sm: 'h-8 text-xs',
   lg: 'h-12 text-sm group-data-[collapsible=icon]:p-0!',
 } as const
 
@@ -439,7 +439,7 @@ export function SidebarMenuButton({
 }) {
   const { state, isMobile } = useSidebar()
   const classes = cn(
-    'peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden transition-[width,height,padding] hover:bg-surface-2 hover:text-fg focus-visible:ring-2 focus-visible:ring-ring/50 active:bg-surface-2 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-surface-2 data-[active=true]:font-medium data-[active=true]:text-fg [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0',
+    'peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden transition-[width,height,padding] hover:bg-surface-2 hover:text-fg focus-visible:ring-2 focus-visible:ring-ring/50 active:bg-surface-2 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-primary-chip data-[active=true]:font-semibold data-[active=true]:text-primary-text data-[active=true]:shadow-[inset_3px_0_0_var(--color-primary)] [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0',
     'group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2!',
     MENU_BUTTON_VARIANTS[variant],
     MENU_BUTTON_SIZES[size],

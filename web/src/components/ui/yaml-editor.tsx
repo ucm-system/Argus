@@ -332,24 +332,12 @@ export function YamlEditor({
         />
       </div>
 
-      {/* block-end 提示条（对齐 shadcn InputGroup block-end）：解析状态 + 操作提示 */}
-      <div className="flex shrink-0 items-center gap-2 border-t border-line bg-surface-2 px-3 py-1.5 text-2xs">
-        {error ? (
-          <span className="text-danger-text">YAML 解析失败：第 {error.line} 行，第 {error.col} 列</span>
-        ) : value.trim() ? (
-          <span className="inline-flex items-center gap-1 text-fg-3">
-            <span className="size-1.5 rounded-full bg-success" aria-hidden />
-            YAML 可解析
-          </span>
-        ) : (
-          /* #111：空白不算「有效」——中性灰点，语法状态等填写后再判定 */
-          <span className="inline-flex items-center gap-1 text-fg-3">
-            <span className="size-1.5 rounded-full bg-fg-4" aria-hidden />
-            内容为空（语法状态待填写后判定）
-          </span>
-        )}
-        <span className="ml-auto truncate text-fg-3">{hint ?? '拖动右下角可调整高度'}</span>
-      </div>
+      {error || hint ? (
+        <div className="flex shrink-0 items-center gap-2 border-t border-line bg-surface-2 px-3 py-1.5 text-2xs">
+          {error ? <span className="text-danger-text">YAML 解析失败：第 {error.line} 行，第 {error.col} 列</span> : null}
+          {hint ? <span className="ml-auto truncate text-fg-3">{hint}</span> : null}
+        </div>
+      ) : null}
     </div>
   )
 }

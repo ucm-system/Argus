@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { AlignLeft, ListChecks, Plus, Trash2 } from 'lucide-react'
+import { AlignLeft, CheckCircle2, Circle, Link2, ListChecks, Play, Plus, Server, Trash2, Wand2 } from 'lucide-react'
 import { parse as parseYaml } from 'yaml'
 import { api, writeBlockedReason } from '@/api'
 import { toApiError } from '@/api/client'
 import type { ApiErrorBody, Runner, RunnerSpec, TaskManifest, ValidationIssue } from '@/api/types'
 import { RunnerDrawer } from '@/components/app/RunnerDrawer'
-import { InputExample } from '@/components/app/InputExample'
 import { Badge, Tag } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardBody, CardHeader } from '@/components/ui/card'
@@ -16,10 +15,11 @@ import { JsonlEditor } from '@/components/ui/jsonl-editor'
 import { Segmented } from '@/components/ui/segmented'
 import { Banner } from '@/components/ui/states'
 import { FormErrorSummary } from '@/components/app/FormErrorSummary'
+import { PageHeader } from '@/components/app/PageHeader'
 import { useToast } from '@/components/ui/toast'
 import { useAsync } from '@/hooks/useAsync'
 import { useIdentity } from '@/hooks/useIdentity'
-import { inputHint, inputFormatLabel } from '@/lib/runner-format'
+import { inputFormatLabel } from '@/lib/runner-format'
 import { validateJsonlInput, validateYamlInput, formatJsonl, type InputIssue } from '@/lib/input-validate'
 import { cn } from '@/lib/utils'
 
@@ -263,7 +263,17 @@ export function SubmitPage() {
     })
   }
 
-  /** 「填入输入框」：用 runner.placeholder **覆盖**当前输入；已写的内容用撤销 toast 兜底（不静默丢失）。 */
+  const fillDeployExample = () => {
+    if (!deployRunnerObj?.placeholder) return
+    const previous = deployInput
+    setDeployInput(deployRunnerObj.placeholder)
+    toast({
+      title: '已填入示例', tone: 'ok', durationMs: 7000,
+      action: previous.trim() ? { label: '撤销', onClick: () => setDeployInput(previous) } : undefined,
+    })
+  }
+
+  /** 「填入示例」：覆盖当前输入；已有内容用撤销 toast 兜底。 */
   const fillExample = (draft: RunnerDraft, placeholder: string) => {
     const previous = draft.input
     setRunnerDraft(draft.key, { input: placeholder })
@@ -344,7 +354,10 @@ export function SubmitPage() {
   const runnerIssueCount = Object.values(draftIssues).reduce((sum, list) => sum + list.length, 0)
   const deployIssueCount = deployIsYaml ? (deployParse.error ? 1 : 0) : deployJsonlIssues.length
   const serviceReady =
-    deployRunnerName === '' ? Boolean(serviceUrl.trim()) : Boolean(deployRunnerObj) && deployIssueCount === 0
+    deployRunnerName === ''
+      ? Boolean(serviceUrl.trim())
+      : Boolean(deployRunnerObj) && Boolean(deployInput.trim()) && deployIssueCount === 0
+  const runnerReady = runnerDrafts.every((draft) => draft.input.trim().length > 0) && runnerIssueCount === 0
   const validateState: 'ok' | 'bad' | 'idle' = dryRunOk === true ? 'ok' : dryRunOk === false ? 'bad' : 'idle'
 
   // 列表到达后的默认选择：Genet（用户裁决默认服务来源）；没有 deploy runner 时回外接。
@@ -432,8 +445,14 @@ export function SubmitPage() {
 
   const addRunner = () => {
     const key = newKey()
+    const nextIndex = runnerDrafts.length + 1
     setRunnerDrafts((prev) => [...prev, { key, name: '', runner: defaultRunner, input: '' }])
     setActiveKey(key)
+    window.requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(`[data-testid="runner-row-${nextIndex}"]`)
+      row?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      row?.querySelector<HTMLElement>('select')?.focus({ preventScroll: true })
+    })
   }
 
   /**
@@ -715,87 +734,82 @@ export function SubmitPage() {
 
       {!error && issues.length === 0 && dryRunOk === true ? <Banner tone="info" title="dry-run 通过" /> : null}
 
-      {/*
-        #111 主路径重排：① 服务来源 → ② 测试配置 → ③ 高级配置（折叠）→ ④ 提交检查与动作。
-        保持单页专业表单（不做成向导）；名称等可选信息跟随所属区块，不再单独占一张卡。
-      */}
+      <PageHeader title="提交 Task" />
+      <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
+        <div className="flex min-w-0 flex-col gap-5">
 
       {/* ① 服务来源：平台部署 XOR 已有服务（互斥由提交校验把关，§10.1）；切换保留各自草稿 */}
       <Card data-testid="submit-source-card">
         <CardHeader
           tone="primary"
-          title="服务来源"
-          sub="平台部署 / 已有服务二选一；切换形态时各自填过的内容会保留"
+          title={<span className="flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-primary-weak text-2xs text-primary-text">1</span>选择服务来源</span>}
         />
         <CardBody className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Segmented<'deploy' | 'service'>
-              ariaLabel="服务来源形态"
-              testId="source-mode"
-              value={sourceMode}
-              onChange={switchSourceMode}
-              options={[
-                { value: 'deploy', label: '平台部署' },
-                { value: 'service', label: '已有服务' },
-              ]}
-            />
-            {deployRunnerObj ? (
-              <span className="flex flex-wrap items-center gap-1.5 text-xs text-fg-3">
-                当前：
-                <Tag mono>
-                  {deployRunnerObj.name} v{deployRunnerObj.version}
-                </Tag>
-                <Tag mono>{deployRunnerObj.input_format}</Tag>
-                {deployRunnerObj.clean_runner ? (
-                  <Tag data-testid="deploy-clean-tag">提交后自动注入 clean：{deployRunnerObj.clean_runner}</Tag>
-                ) : (
-                  <Tag data-testid="deploy-clean-tag">无 clean 阶段</Tag>
-                )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  data-testid="deploy-runner-detail"
-                  aria-label="查看服务来源的 Runner 详情"
-                  onClick={() => setDetailRunner(deployRunnerObj.name)}
+          <div className="grid grid-cols-2 gap-3" data-testid="source-mode" role="group" aria-label="服务来源形态">
+            {([
+              { mode: 'deploy' as const, title: '平台部署', description: '由 Runner 部署并管理生命周期', icon: Server },
+              { mode: 'service' as const, title: '已有服务', description: '直接填写 URL，不执行部署', icon: Link2 },
+            ]).map((option) => {
+              const active = sourceMode === option.mode
+              const Icon = option.icon
+              return (
+                <button
+                  key={option.mode}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => switchSourceMode(option.mode)}
+                  className={cn(
+                    'flex items-start gap-3 rounded-lg border px-4 py-3.5 text-left transition-colors',
+                    active ? 'border-primary bg-primary-weak text-fg shadow-xs' : 'border-line bg-surface hover:border-line-strong hover:bg-surface-2',
+                  )}
                 >
-                  详情
-                </Button>
-              </span>
-            ) : sourceMode === 'service' ? (
-              <span className="text-xs text-fg-3">静态服务直接注入（AG_SERVED_URL），不产生部署与 clean 阶段</span>
-            ) : null}
+                  <Icon className={cn('mt-0.5 size-4 shrink-0', active ? 'text-primary-text' : 'text-fg-3')} aria-hidden />
+                  <span><span className="block text-sm font-medium">{option.title}</span><span className="mt-0.5 block text-2xs text-fg-3">{option.description}</span></span>
+                </button>
+              )
+            })}
           </div>
 
           <section
             data-testid="source-block"
-            className="flex flex-col gap-2.5 rounded-lg border border-dashed border-line-strong px-3 py-3"
+            className="flex flex-col gap-4"
             aria-label="服务来源"
           >
             {deployRunnerName ? (
               <div className="flex flex-col gap-2">
-                <Field label="部署 Runner" required htmlFor="deploy-runner-select" error={issueFor('task.deploy.runner')}>
-                  <div className="flex items-center gap-2">
+                <div>
+                  <Field label="部署 Runner" required htmlFor="deploy-runner-select" error={issueFor('task.deploy.runner')}>
                     <Select
                       id="deploy-runner-select"
                       aria-label="服务来源 Runner"
                       data-testid="deploy-runner"
                       value={deployRunnerName ?? ''}
                       onChange={(e) => setDeployRunnerName(e.target.value)}
-                      className="h-9 w-80 text-sm"
+                      className="h-10 w-full text-sm"
                     >
-                      {runners.loading && deployRunners.length === 0 ? (
-                        <option value="">（Runner 目录加载中…）</option>
-                      ) : null}
+                      {runners.loading && deployRunners.length === 0 ? <option value="">（Runner 目录加载中…）</option> : null}
                       {deployRunners.map((runner: Runner) => (
                         <option key={runner.name} value={runner.name}>
-                          {runner.display_name || runner.name}
-                          {runner.name === defaultDeployRunnerName ? '（默认）' : ''} · {runner.name} v{runner.version}
+                          {runner.display_name || runner.name}{runner.name === defaultDeployRunnerName ? '（默认）' : ''} · {runner.name} v{runner.version}
                         </option>
                       ))}
                     </Select>
-                  </div>
-                </Field>
+                  </Field>
+                  {deployRunnerObj ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-fg-3">
+                      <span className="font-mono">{deployRunnerObj.input_format}</span><span aria-hidden>·</span>
+                      <span data-testid="deploy-clean-tag">{deployRunnerObj.clean_runner ? `完成后自动清理：${deployRunnerObj.clean_runner}` : '无 clean 阶段'}</span>
+                      <Button size="sm" variant="ghost" className="ml-auto -my-1" data-testid="deploy-runner-detail" aria-label="查看服务来源的 Runner 详情" onClick={() => setDetailRunner(deployRunnerObj.name)}>参数与详情</Button>
+                    </div>
+                  ) : null}
+                </div>
 
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs font-medium text-fg-2">{deployIsYaml ? '部署描述 YAML' : 'deploy 输入（JSONL）'} <span className="text-danger-text">*</span></span>
+                  {deployRunnerObj?.placeholder ? (
+                    <Button size="sm" variant="ghost" className="ml-auto -my-1" data-testid="deploy-fill-example" icon={<Wand2 className="size-3" aria-hidden />} onClick={fillDeployExample}>填入示例</Button>
+                  ) : null}
+                </div>
                 {deployIsYaml ? (
                   <>
                     {/* CodeMirror 6：真语法高亮 + 行号 + 横向滚动；语法错误按行列标行 */}
@@ -805,33 +819,8 @@ export function SubmitPage() {
                       rows={7}
                       aria-label="部署描述 YAML"
                       title="deploy.input"
-                      hint="2 空格缩进"
                       error={lintPos}
                     />
-                    {/*
-                      #111：空白 YAML ≠「配置有效」。三态分开——
-                      empty：中性「尚未填写」；error：语法错误；ok：语法有效（并注明完整性归提交校验）。
-                    */}
-                    <p
-                      data-testid="deploy-yaml-status"
-                      data-state={deployInput.trim() ? (deployParse.error ? 'error' : 'ok') : 'empty'}
-                      role="status"
-                      aria-live="polite"
-                      className={cn(
-                        'text-xs',
-                        deployParse.error && deployInput.trim()
-                          ? 'text-danger-text'
-                          : deployInput.trim()
-                            ? 'text-success-text'
-                            : 'text-fg-3',
-                      )}
-                    >
-                      {!deployInput.trim()
-                        ? '尚未填写部署描述（可用下方示例填入；空描述能否提交以校验为准）'
-                        : deployParse.error
-                          ? `${deployParse.pos ? `第 ${deployParse.pos.line} 行第 ${deployParse.pos.col} 列：` : ''}${deployParse.error}`
-                          : '✓ 语法有效（YAML 可解析；配置是否完整以提交校验为准）'}
-                    </p>
                     {deployParse.error && deployInput.trim() ? (
                       <p
                         data-testid="deploy-yaml-error"
@@ -847,8 +836,6 @@ export function SubmitPage() {
                 ) : (
                   <>
                     <Field
-                      label="deploy 输入（JSONL）"
-                      hint={inputHint(deployRunnerObj?.input_format ?? 'jsonl')}
                       error={issueFor('task.deploy.input')}
                     >
                       <JsonlEditor
@@ -881,27 +868,10 @@ export function SubmitPage() {
                     ) : null}
                   </>
                 )}
-                {/* 示例可查看 / 可复制 / 可填入（用户 2026-11-11；不再只藏在 placeholder 灰字里） */}
-                {deployRunnerObj?.placeholder ? (
-                  <InputExample
-                    example={deployRunnerObj.placeholder}
-                    testIdPrefix="deploy"
-                    title={`${deployRunnerObj.name} 的输入示例（${inputFormatLabel(deployRunnerObj.input_format)}）`}
-                    onFill={() => {
-                      const previous = deployInput
-                      setDeployInput(deployRunnerObj.placeholder ?? '')
-                      toast({
-                        title: '已填入示例',
-                        tone: 'ok',
-                        durationMs: 7000,
-                        action: previous.trim() ? { label: '撤销', onClick: () => setDeployInput(previous) } : undefined,
-                      })
-                    }}
-                  />
-                ) : null}
               </div>
             ) : (
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="flex flex-col gap-4">
+                <div className="grid gap-4 sm:grid-cols-3">
                 <Field label="服务 base URL" required error={issueFor('task.service.url')} className="sm:col-span-2">
                   <Input
                     ref={registerField('task.service.url')}
@@ -917,6 +887,7 @@ export function SubmitPage() {
                 <Field label="模型路径（可选）" className="sm:col-span-3">
                   <Input value={modelPath} onChange={(e) => setModelPath(e.target.value)} placeholder="/models/Qwen3-32B" />
                 </Field>
+                </div>
               </div>
             )}
           </section>
@@ -931,13 +902,7 @@ export function SubmitPage() {
       <Card data-testid="submit-runners-card">
         <CardHeader
           tone="primary"
-          title="测试配置"
-          sub="每个 runner 一个通用输入框（按 Runner 的 input_format）；示例可查看 / 填入"
-          actions={
-            <Button size="sm" data-testid="add-runner" icon={<Plus className="size-3" aria-hidden />} onClick={addRunner}>
-              添加 runner
-            </Button>
-          }
+          title={<span className="flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-primary-weak text-2xs text-primary-text">2</span>配置测试</span>}
         />
         <CardBody className="flex flex-col gap-3">
           {/*
@@ -945,9 +910,8 @@ export function SubmitPage() {
             粘贴可以绕过 maxlength，所以超限时这里也会立刻报红并把「提交」置灰（不等后端 400）。
           */}
           <Field
-            label="Task 名称"
+            label="Task 名称（可选）"
             htmlFor="task-name"
-            hint="可选：留空时平台自动生成（默认使用 Task ID）"
             error={nameError}
           >
             <div id="task-name-row" className="flex items-center gap-2">
@@ -957,20 +921,19 @@ export function SubmitPage() {
                 value={name}
                 maxLength={NAME_MAX_RUNES}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="如 qwen3-32b-daily（留空自动生成）"
+                placeholder="如 qwen3-32b-daily"
                 aria-invalid={Boolean(nameError)}
                 className="flex-1"
               />
-              <span
-                data-testid="task-name-counter"
-                aria-live="polite"
-                className={cn(
-                  'shrink-0 font-mono text-2xs tabular-nums',
-                  nameTooLong ? 'font-medium text-danger-text' : 'text-fg-3',
-                )}
-              >
-                已输入 {nameRunes} / {NAME_MAX_RUNES}
-              </span>
+              {nameRunes > 0 ? (
+                <span
+                  data-testid="task-name-counter"
+                  aria-live="polite"
+                  className={cn('shrink-0 font-mono text-2xs tabular-nums', nameTooLong ? 'font-medium text-danger-text' : 'text-fg-3')}
+                >
+                  已输入 {nameRunes} / {NAME_MAX_RUNES}
+                </span>
+              ) : null}
             </div>
           </Field>
 
@@ -1025,73 +988,45 @@ export function SubmitPage() {
                 onClick={() => setActiveKey(draft.key)}
                 onFocusCapture={() => setActiveKey(draft.key)}
               >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-2xs text-fg-2">
-                    {index + 1}
-                  </span>
-                  <Input
-                    value={draft.name}
-                    aria-label={`runner ${index + 1} 名称`}
-                    aria-invalid={Boolean(nameIssue)}
-                    title={nameIssue ?? undefined}
-                    placeholder="如 accuracy-dataset-a（留空自动生成）"
-                    className="h-8 w-56"
-                    onChange={(e) => setRunnerDraft(draft.key, { name: e.target.value })}
-                  />
-                  <Select
-                    value={draft.runner || defaultRunner}
-                    aria-label={`runner ${index + 1} Runner`}
-                    className="h-8 w-48"
-                    onChange={(e) => {
-                      setActiveKey(draft.key)
-                      setRunnerDraft(draft.key, { runner: e.target.value })
-                    }}
-                  >
-                    {runnerOptions.length === 0 ? <option value="">（还没有 Runner）</option> : null}
-                    {runnerOptions.map((runner) => (
-                      <option key={runner.name} value={runner.name}>
-                        {runner.name} v{runner.version}
-                      </option>
-                    ))}
-                  </Select>
-                  {/* 详情：复用 `/runners?open=` 的同一个抽屉组件（不复制第二份）；所有「详情」统一 ghost 文字（button.tsx 层级约束） */}
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="grid size-5 shrink-0 place-items-center rounded-full bg-primary-weak text-2xs text-primary-text">{index + 1}</span>
+                  <span className="text-xs font-medium text-fg-2">Runner {index + 1}</span>
+                  {issues.some((issue) => issue.path.startsWith(`task.runners[${index}]`)) ? <Badge tone="err">有校验问题</Badge> : null}
+                  <Button size="sm" variant="ghost" className="ml-auto -my-1" aria-label={`移除 runner ${index + 1}`} data-testid={`remove-runner-${index + 1}`} onClick={() => removeRunner(index)}>移除</Button>
+                </div>
+                <div className="grid items-end gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <Field label="Runner 名称（可选）">
+                    <Input
+                      value={draft.name}
+                      aria-label={`runner ${index + 1} 名称`}
+                      aria-invalid={Boolean(nameIssue)}
+                      title={nameIssue ?? undefined}
+                      placeholder="如 accuracy-dataset-a"
+                      onChange={(e) => setRunnerDraft(draft.key, { name: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="测试 Runner" required>
+                    <Select
+                      value={draft.runner || defaultRunner}
+                      aria-label={`runner ${index + 1} Runner`}
+                      onChange={(e) => {
+                        setActiveKey(draft.key)
+                        setRunnerDraft(draft.key, { runner: e.target.value })
+                      }}
+                    >
+                      {runnerOptions.length === 0 ? <option value="">（还没有 Runner）</option> : null}
+                      {runnerOptions.map((runner) => <option key={runner.name} value={runner.name}>{runner.name} v{runner.version}</option>)}
+                    </Select>
+                  </Field>
                   <Button
-                    size="sm"
-                    variant="ghost"
-                    data-testid="runner-runner-detail"
-                    data-runner-index={index + 1}
+                    size="sm" variant="ghost" className="mb-0.5" data-testid="runner-runner-detail" data-runner-index={index + 1}
                     disabled={!resolvedRunner}
                     title={resolvedRunner ? `查看 ${resolvedRunner.name} 的参数与镜像` : '还没有可选的 Runner'}
                     aria-label={`查看 runner ${index + 1} 的 Runner 详情`}
-                    onClick={() => {
-                      if (!resolvedRunner) return
-                      setActiveKey(draft.key)
-                      setDetailRunner(resolvedRunner.name)
-                    }}
-                  >
-                    详情
-                  </Button>
-                  {resolvedRunner ? (
-                    <span className="flex items-center gap-1">
-                      <Tag mono>{resolvedRunner.input_format}</Tag>
-                      {resolvedRunner.exclusive ? <Tag>独占</Tag> : null}
-                      <Tag>{resolvedRunner.on_failure}</Tag>
-                    </span>
-                  ) : null}
-                  {issues.some((issue) => issue.path.startsWith(`task.runners[${index}]`)) ? (
-                    <Badge tone="err">有校验问题</Badge>
-                  ) : null}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="ml-auto"
-                    aria-label={`移除 runner ${index + 1}`}
-                    data-testid={`remove-runner-${index + 1}`}
-                    onClick={() => removeRunner(index)}
-                  >
-                    移除
-                  </Button>
+                    onClick={() => { if (!resolvedRunner) return; setActiveKey(draft.key); setDetailRunner(resolvedRunner.name) }}
+                  >参数与详情</Button>
                 </div>
+                {resolvedRunner ? <p className="mt-2 text-2xs text-fg-3">{resolvedRunner.input_format} · {resolvedRunner.on_failure}{resolvedRunner.exclusive ? ' · 独占 Endpoint' : ''}</p> : null}
                 {nameIssue ? (
                   <p data-testid={`runner-name-error-${index + 1}`} role="alert" className="mt-1.5 text-2xs text-danger-text">
                     {nameIssue}
@@ -1100,7 +1035,7 @@ export function SubmitPage() {
                 <div className="mt-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-2xs text-fg-3">
-                      输入{resolvedRunner ? `（${inputFormatLabel(resolvedRunner.input_format)}）` : ''}
+                      Runner 输入{resolvedRunner ? `（${inputFormatLabel(resolvedRunner.input_format)}）` : ''} <span className="text-danger-text">*</span>
                     </span>
                     {/* 就地小按钮组（校验 / 格式化 / 压缩）：点按就地生效、行内报错；仅客户端 dry-run，最终以提交时服务端校验为准 */}
                     <Button
@@ -1125,11 +1060,17 @@ export function SubmitPage() {
                         </Button>
                       </>
                     ) : null}
+                    {resolvedRunner?.placeholder ? (
+                      <Button
+                        size="sm" variant="ghost" data-testid={`input-${index + 1}-fill-example`}
+                        icon={<Wand2 className="size-3" aria-hidden />}
+                        onClick={() => fillExample(draft, resolvedRunner.placeholder ?? '')}
+                      >填入示例</Button>
+                    ) : null}
                   </div>
                   <Field
                     className="mt-1"
                     error={issueFor(`task.runners[${index}].input`) ?? issueFor(`task.runners[${index}].runner`)}
-                    hint={resolvedRunner ? inputHint(resolvedRunner.input_format) : undefined}
                   >
                     <JsonlEditor
                       value={draft.input}
@@ -1162,20 +1103,19 @@ export function SubmitPage() {
                       ) : null}
                     </ul>
                   ) : null}
-                  {/* 示例可查看 / 可复制 / 可填入（每行都有，跟当前 Runner 走） */}
-                  {resolvedRunner?.placeholder ? (
-                    <InputExample
-                      example={resolvedRunner.placeholder}
-                      testIdPrefix={`input-${index + 1}`}
-                      title={`${resolvedRunner.name} 的输入示例（${inputFormatLabel(resolvedRunner.input_format)}）`}
-                      className="mt-1.5"
-                      onFill={() => fillExample(draft, resolvedRunner.placeholder ?? '')}
-                    />
-                  ) : null}
                 </div>
               </div>
             )
           })}
+          <Button
+            variant="secondary"
+            data-testid="add-runner"
+            className="mt-1 w-full border-dashed bg-surface-2/60 py-5 text-fg-3 hover:text-fg"
+            icon={<Plus className="size-4" aria-hidden />}
+            onClick={addRunner}
+          >
+            {runnerDrafts.length === 0 ? '添加 Runner' : '添加另一个 Runner'}
+          </Button>
         </CardBody>
       </Card>
 
@@ -1185,31 +1125,19 @@ export function SubmitPage() {
         有已填内容（如重试回填）时自动展开，避免"藏了东西"的错觉。
       */}
       <Card data-testid="submit-advanced-card">
-        <CardHeader
-          tone="muted"
-          title="高级配置"
-          sub="环境变量、凭据、precheck 与执行环境——默认值即可运行"
-        />
-        <CardBody>
+        <CardBody className="p-0">
           <details ref={advancedRef} onToggle={() => (advancedTouched.current = true)} data-testid="advanced-section">
-            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-fg-2 [&::-webkit-details-marker]:hidden">
-              <span className="text-fg-3 transition-transform" aria-hidden>
-                ▸
-              </span>
-              展开 / 收起高级配置
-              {envRows.length + secretRows.length > 0 ? (
-                <Badge tone="muted">已填 {envRows.length + secretRows.length} 项</Badge>
-              ) : (
-                <Badge tone="muted">当前为默认值</Badge>
-              )}
+            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-5 py-4 text-sm font-medium text-fg-2 [&::-webkit-details-marker]:hidden">
+              <span className="text-fg-3 transition-transform" aria-hidden>▸</span>
+              高级配置
+              {envRows.length + secretRows.length > 0 ? <Badge tone="muted">已填 {envRows.length + secretRows.length} 项</Badge> : null}
             </summary>
 
-            <div className="mt-4 flex flex-col gap-5">
+            <div className="flex flex-col gap-5 border-t border-line-soft px-5 py-5">
               {/* 环境变量与凭据：Task 粒度，注入该 Task 下全部 runner（§12.4） */}
               <section className="flex flex-col gap-2" aria-label="环境变量与凭据">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-sm font-semibold text-fg">环境变量与凭据</h3>
-                  <span className="text-2xs text-fg-3">Task 级填一次，注入全部 runner；凭据只填引用名</span>
                   <span className="ml-auto flex items-center gap-2">
                     <Button
                       size="sm"
@@ -1231,12 +1159,6 @@ export function SubmitPage() {
                     </Button>
                   </span>
                 </div>
-                {/* 默认 0 行：不预填示例（那是要提交的内容，不是装饰） */}
-                {envRows.length === 0 && secretRows.length === 0 ? (
-                  <p data-testid="env-empty-hint" className="text-xs text-fg-3">
-                    暂无，需要时点右侧添加。
-                  </p>
-                ) : null}
                 {envRows.map((row, index) => (
                   <div key={`env-${index}`} className="flex items-center gap-2">
                     <Input
@@ -1275,7 +1197,7 @@ export function SubmitPage() {
                     <Input
                       value={row.value}
                       aria-label={`secret 引用 ${index + 1}`}
-                      placeholder="endpoint/prod-qwen（只填引用名，不填明文）"
+                      placeholder="endpoint/prod-qwen"
                       onChange={(e) =>
                         setSecretRows((prev) => prev.map((item, i) => (i === index ? { ...item, value: e.target.value } : item)))
                       }
@@ -1347,89 +1269,39 @@ export function SubmitPage() {
         </CardBody>
       </Card>
 
-      {/*
-        ④ 提交检查与动作（#111）：三枚检查 chip + 校验/提交按钮，sticky 在长页面任何位置都可达。
-        层级：「提交」是页面唯一主按钮（蓝色），「校验」是次级动作。
-      */}
-      <div
-        data-testid="submit-footer"
-        className="sticky bottom-0 z-10 mt-1 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface/95 px-4 py-3 shadow-overlay backdrop-blur-sm"
-      >
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-fg-3">提交检查：</span>
-          <span
-            data-testid="submit-check-service"
-            className={cn(
-              'inline-flex h-6 items-center gap-1 rounded-full border px-2',
-              serviceReady ? 'border-success/40 bg-success-weak text-success-text' : 'border-danger/40 bg-danger-weak text-danger-text',
-            )}
-          >
-            服务来源{serviceReady ? '已就绪' : '未完成'} ·{' '}
-            {deployRunnerName === ''
-              ? serviceUrl.trim()
-                ? '已有服务'
-                : '已有服务（URL 未填）'
-              : deployRunnerObj
-                ? `平台部署 ${deployRunnerObj.name}`
-                : '平台部署（未选择 Runner）'}
-          </span>
-          <span
-            data-testid="submit-check-runners"
-            className={cn(
-              'inline-flex h-6 items-center gap-1 rounded-full border px-2',
-              runnerIssueCount === 0 ? 'border-line bg-surface-2 text-fg-2' : 'border-danger/40 bg-danger-weak text-danger-text',
-            )}
-          >
-            Runner 输入
-            {runnerDrafts.length === 0
-              ? '未添加（只验证服务）'
-              : `${runnerDrafts.length} 行${runnerIssueCount > 0 ? ` · ${runnerIssueCount} 条问题` : ' · 无问题'}`}
-          </span>
-          <span
-            data-testid="submit-check-validate"
-            className={cn(
-              'inline-flex h-6 items-center gap-1 rounded-full border px-2',
-              validateState === 'ok'
-                ? 'border-success/40 bg-success-weak text-success-text'
-                : validateState === 'bad'
-                  ? 'border-danger/40 bg-danger-weak text-danger-text'
-                  : 'border-line bg-surface-2 text-fg-3',
-            )}
-          >
-            {validateState === 'ok' ? '校验通过' : validateState === 'bad' ? `校验未通过（${issues.length} 条）` : '未校验'}
-          </span>
-          <span className={cn(blocked || submitDisabled ? 'text-danger-text' : 'text-fg-3')}>
-            {blocked
-              ? `当前角色 ${auth.role ?? 'viewer'} 只读：${blocked}`
-              : submitDisabled
-                ? submitTitle
-                : ''}
-          </span>
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            data-testid="validate-task"
-            variant="secondary"
-            loading={dryRunning}
-            disabled={submitDisabled}
-            aria-disabled={submitDisabled}
-            title={submitTitle}
-            onClick={() => void onDryRun()}
-          >
-            校验
-          </Button>
-          <Button
-            variant="primary"
-            data-testid="submit-task"
-            loading={submitting}
-            disabled={submitDisabled}
-            aria-disabled={submitDisabled}
-            title={submitTitle}
-            onClick={() => void onSubmit()}
-          >
-            提交
-          </Button>
-        </div>
+
+        <Card data-testid="submit-footer" className="sticky top-4">
+          <CardHeader title="提交检查" />
+          <CardBody className="flex flex-col gap-4">
+            {[
+              {
+                id: 'service', done: serviceReady, title: '服务配置',
+                detail: deployRunnerName === ''
+                  ? (serviceUrl.trim() ? '已有服务 · URL 已填写' : '已有服务 · URL 未填写')
+                  : (serviceReady ? `平台部署 ${deployRunnerObj?.name ?? ''}` : '部署描述尚未填写'),
+              },
+              {
+                id: 'runners', done: runnerReady, title: '测试输入',
+                detail: runnerDrafts.length === 0 ? '未添加（只验证服务）' : !runnerReady && runnerIssueCount === 0 ? 'Runner 输入尚未填写' : `${runnerDrafts.length} 行${runnerIssueCount > 0 ? ` · ${runnerIssueCount} 条问题` : ' · 已填写'}`,
+              },
+              {
+                id: 'validate', done: validateState === 'ok', title: '提交校验',
+                detail: validateState === 'ok' ? '校验通过' : validateState === 'bad' ? `${issues.length} 条问题待处理` : '尚未校验',
+              },
+            ].map((item) => (
+              <div key={item.id} data-testid={`submit-check-${item.id}`} className="flex items-start gap-2.5">
+                {item.done ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success-text" aria-hidden /> : <Circle className="mt-0.5 size-4 shrink-0 text-fg-3" aria-hidden />}
+                <div><p className="text-xs font-medium text-fg">{item.title}</p><p className="mt-0.5 text-2xs text-fg-3">{item.detail}</p></div>
+              </div>
+            ))}
+            {blocked || submitDisabled ? <p className="text-2xs text-danger-text">{blocked ?? submitTitle}</p> : null}
+            <div className="grid grid-cols-[1fr_1.35fr] gap-2 border-t border-line-soft pt-4">
+              <Button data-testid="validate-task" variant="secondary" loading={dryRunning} disabled={submitDisabled} aria-disabled={submitDisabled} title={submitTitle} onClick={() => void onDryRun()}>校验</Button>
+              <Button variant="primary" data-testid="submit-task" loading={submitting} disabled={submitDisabled} aria-disabled={submitDisabled} title={submitTitle} icon={<Play className="size-3.5" aria-hidden />} onClick={() => void onSubmit()}>提交 Task</Button>
+            </div>
+          </CardBody>
+        </Card>
       </div>
 
       {/* 与 Runner 目录页是同一个抽屉组件：参数 schema 里也能直接复制进当前 runner 的输入框 */}

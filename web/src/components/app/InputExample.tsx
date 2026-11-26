@@ -37,11 +37,11 @@ export function InputExample({
       data-testid={testIdPrefix ? `${testIdPrefix}-example` : undefined}
       className={cn('group rounded-md border border-line-soft bg-surface-2', className)}
     >
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-1.5 text-2xs text-fg-2 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-xs text-fg-2 [&::-webkit-details-marker]:hidden">
         <span className="text-fg-3 transition-transform group-open:rotate-90" aria-hidden>
           ▸
         </span>
-        示例
+        {onFill ? '查看示例 / 填入输入框' : '查看示例 / 复制'}
       </summary>
       <div className="border-t border-line-soft px-2.5 py-2">
         <div className="flex flex-wrap items-center gap-2">
