@@ -40,17 +40,16 @@ export interface KpiCardProps {
  */
 export function KpiCard({ label, value, hint, tone = 'muted', className }: KpiCardProps) {
   return (
-    <div
-      className={cn('group min-w-0 rounded-xl border border-line bg-surface p-5 shadow-xs', className)}
-    >
+    // 紧凑档（#117 评审）：p-4 + 24px 数值——KPI 是扫描用的一行摘要，不能把下面的 Task 表挤到首屏外
+    <div className={cn('group min-w-0 rounded-xl border border-line bg-surface p-4 shadow-xs', className)}>
       <div className="flex items-center gap-2">
         <span className={cn('inline-block size-1.5 rounded-sm', DOT_TONE[tone])} aria-hidden />
-        <span className="text-sm font-medium text-fg-2">{label}</span>
+        <span className="text-xs font-medium text-fg-2">{label}</span>
       </div>
-      <p className={cn('mt-2 text-3xl font-semibold leading-none tabular-nums tracking-tight', VALUE_TONE[tone])}>
+      <p className={cn('mt-1.5 text-2xl font-semibold leading-none tabular-nums tracking-tight', VALUE_TONE[tone])}>
         {value}
       </p>
-      {hint ? <p className="mt-2 text-xs leading-[18px] text-fg-3">{hint}</p> : null}
+      {hint ? <p className="mt-1.5 text-xs leading-[18px] text-fg-3">{hint}</p> : null}
     </div>
   )
 }

@@ -16,8 +16,8 @@ test('① 非法提交：摘要滚进视口 + issues 逐条 + trace_id 可复制
   await page.goto('/submit')
   await expect(page.getByTestId('deploy-runner')).toBeVisible({ timeout: 15_000 })
 
-  // 造一个前端会拦下的提交（D-78 后 name 不再必填）：切外接模式，服务 URL 留空
-  await page.getByTestId('deploy-runner').selectOption({ label: '已有服务（不部署，直接填地址）' })
+  // 造一个前端会拦下的提交（D-78 后 name 不再必填）：切「已有服务」形态，服务 URL 留空
+  await page.getByTestId('source-mode').getByRole('button', { name: '已有服务' }).click()
   await page.getByRole('button', { name: '提交', exact: true }).click()
 
   const summary = page.getByTestId('form-error-summary')
@@ -65,6 +65,8 @@ test('① 校验（dry_run）用同一套呈现：问题清单可见，不再是
   await page.addInitScript(() => window.localStorage.setItem('argus:mock-role', 'operator'))
   await page.goto('/submit')
 
+  // 执行环境在「高级配置」折叠区里（#111）：先展开再清空
+  await page.getByTestId('advanced-section').locator('summary').click()
   // D-78：name 不再必填；清空 execution.profile → 前端 issue（服务端同 path 回错）
   await page.getByLabel('执行环境 profile').fill('')
   await page.getByTestId('validate-task').click()

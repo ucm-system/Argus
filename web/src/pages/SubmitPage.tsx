@@ -9,7 +9,7 @@ import { RunnerDrawer } from '@/components/app/RunnerDrawer'
 import { InputExample } from '@/components/app/InputExample'
 import { Badge, Tag } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardBody, CardFooter, CardHeader } from '@/components/ui/card'
+import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { Field, Input, Select } from '@/components/ui/input'
 import { YamlEditor, type YamlEditorError } from '@/components/ui/yaml-editor'
 import { JsonlEditor } from '@/components/ui/jsonl-editor'
@@ -152,6 +152,19 @@ export function SubmitPage() {
   const [retrySource, setRetrySource] = useState<{ id: string; name: string } | null>(null)
   const [retryError, setRetryError] = useState<string | null>(null)
   const retryPrefilled = useRef(false)
+
+  /**
+   * 高级配置折叠区（#111）：默认收起；有已填内容（重试回填 / 用户加过行）时自动展开。
+   * `advancedTouched` 防止自动展开覆盖用户手动收起的状态。
+   */
+  const advancedRef = useRef<HTMLDetailsElement | null>(null)
+  const advancedTouched = useRef(false)
+  useEffect(() => {
+    if (advancedTouched.current) return
+    if ((envRows.length > 0 || secretRows.length > 0 || precheck === 'off') && advancedRef.current) {
+      advancedRef.current.open = true
+    }
+  }, [envRows.length, secretRows.length, precheck])
 
   /**
    * 重试回填（D-76）：等 runner 目录到了再填（避免目录未到时 defaultRunner 乱指）。
@@ -305,6 +318,34 @@ export function SubmitPage() {
 
   /** deploy 输入示例：placeholder 的首行才是纯 jsonl（后几行是人话注释，textarea 灰字只给一行） */
   const deployPlaceholderFirstLine = (deployRunnerObj?.placeholder ?? '').split('\n')[0] ?? ''
+
+  /**
+   * 服务来源两形态（#111）：deploy（平台部署）XOR service（已有服务）。
+   * 用 Segmented 让互斥关系显式可见；切换时**各自草稿保留**（deployInputs / service 三元组互不清空），
+   * 回到平台部署时恢复上一次选中的 deploy runner。
+   */
+  const lastDeployRef = useRef('')
+  useEffect(() => {
+    if (deployRunnerName) lastDeployRef.current = deployRunnerName
+  }, [deployRunnerName])
+  const sourceMode: 'deploy' | 'service' = deployRunnerName === '' ? 'service' : 'deploy'
+  const switchSourceMode = (mode: 'deploy' | 'service') => {
+    if (mode === 'service') {
+      setDeployRunnerName('')
+    } else {
+      setDeployRunnerName(lastDeployRef.current || defaultDeployRunnerName)
+    }
+  }
+
+  /**
+   * 提交检查区（#111）：三枚 chip 让"还差什么"在长页面任何位置都可见——
+   * 服务配置是否完成 / Runner 输入有没有问题 / 校验是否跑过。
+   */
+  const runnerIssueCount = Object.values(draftIssues).reduce((sum, list) => sum + list.length, 0)
+  const deployIssueCount = deployIsYaml ? (deployParse.error ? 1 : 0) : deployJsonlIssues.length
+  const serviceReady =
+    deployRunnerName === '' ? Boolean(serviceUrl.trim()) : Boolean(deployRunnerObj) && deployIssueCount === 0
+  const validateState: 'ok' | 'bad' | 'idle' = dryRunOk === true ? 'ok' : dryRunOk === false ? 'bad' : 'idle'
 
   // 列表到达后的默认选择：Genet（用户裁决默认服务来源）；没有 deploy runner 时回外接。
   useEffect(() => {
@@ -674,228 +715,87 @@ export function SubmitPage() {
 
       {!error && issues.length === 0 && dryRunOk === true ? <Banner tone="info" title="dry-run 通过" /> : null}
 
-      <Card>
-        <CardHeader tone="ok" title="Task" />
-        <CardBody>
-          {/*
-            C8：maxlength=200（后端 D-58，按 rune 上限）+ 实时计数。
-            粘贴可以绕过 maxlength，所以超限时这里也会立刻报红并把「提交」置灰（不等后端 400）。
-          */}
-          <Field
-            label="Task 名称"
-            htmlFor="task-name"
-            hint="可选：留空时平台自动生成（默认使用 Task ID）"
-            error={nameError}
-          >
-            <div id="task-name-row" className="flex items-center gap-2">
-              <Input
-                id="task-name"
-                ref={registerField('task.name')}
-                value={name}
-                maxLength={NAME_MAX_RUNES}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="如 qwen3-32b-daily（留空自动生成）"
-                aria-invalid={Boolean(nameError)}
-                className="flex-1"
-              />
-              <span
-                data-testid="task-name-counter"
-                aria-live="polite"
-                className={cn(
-                  'shrink-0 font-mono text-2xs tabular-nums',
-                  nameTooLong ? 'font-medium text-danger-text' : 'text-fg-3',
-                )}
-              >
-                已输入 {nameRunes} / {NAME_MAX_RUNES}
-              </span>
-            </div>
-          </Field>
-        </CardBody>
-      </Card>
-
-      {/* 环境变量与凭据：Task 粒度，注入该 Task 下全部 runner（§12.4） */}
-      <Card>
-        <CardHeader
-          tone="warn"
-          title="环境变量与凭据"
-          actions={
-            <>
-              <Button
-                size="sm"
-                data-testid="add-env"
-                icon={<Plus className="size-3" aria-hidden />}
-                onClick={() => setEnvRows((p) => [...p, { key: '', value: '' }])}
-              >
-                环境变量
-              </Button>
-              <Button
-                size="sm"
-                data-testid="add-secret"
-                icon={<Plus className="size-3" aria-hidden />}
-                onClick={() => setSecretRows((p) => [...p, { key: '', value: '' }])}
-              >
-                凭据引用
-              </Button>
-            </>
-          }
-        />
-        <CardBody className="flex flex-col gap-2">
-          {/* 默认 0 行：不预填示例（那是要提交的内容，不是装饰） */}
-          {envRows.length === 0 && secretRows.length === 0 ? (
-            <p data-testid="env-empty-hint" className="text-2xs text-fg-3">
-              暂无，需要时点右上角添加。
-            </p>
-          ) : null}
-          {envRows.map((row, index) => (
-            <div key={`env-${index}`} className="flex items-center gap-2">
-              <Input
-                value={row.key}
-                aria-label={`env 键 ${index + 1}`}
-                placeholder="LOG_LEVEL"
-                className="w-48"
-                onChange={(e) =>
-                  setEnvRows((prev) => prev.map((item, i) => (i === index ? { ...item, key: e.target.value } : item)))
-                }
-              />
-              <Input
-                value={row.value}
-                aria-label={`env 值 ${index + 1}`}
-                placeholder="info"
-                onChange={(e) =>
-                  setEnvRows((prev) => prev.map((item, i) => (i === index ? { ...item, value: e.target.value } : item)))
-                }
-              />
-              <Button size="sm" variant="ghost" aria-label="删除该环境变量" onClick={() => removeKeyValueRow('env', index)}>
-                <Trash2 className="size-3.5" aria-hidden />
-              </Button>
-            </div>
-          ))}
-          {secretRows.map((row, index) => (
-            <div key={`secret-${index}`} className="flex items-center gap-2">
-              <Input
-                value={row.key}
-                aria-label={`secret 键 ${index + 1}`}
-                placeholder="ENDPOINT_API_KEY"
-                className="w-48"
-                onChange={(e) =>
-                  setSecretRows((prev) => prev.map((item, i) => (i === index ? { ...item, key: e.target.value } : item)))
-                }
-              />
-              <Input
-                value={row.value}
-                aria-label={`secret 引用 ${index + 1}`}
-                placeholder="endpoint/prod-qwen（只填引用名，不填明文）"
-                onChange={(e) =>
-                  setSecretRows((prev) => prev.map((item, i) => (i === index ? { ...item, value: e.target.value } : item)))
-                }
-              />
-              <Button size="sm" variant="ghost" aria-label="删除该凭据引用" onClick={() => removeKeyValueRow('secret', index)}>
-                <Trash2 className="size-3.5" aria-hidden />
-              </Button>
-            </div>
-          ))}
-        </CardBody>
-      </Card>
-
       {/*
-        runner 管道卡（用户 2026-11-11：deploy 也是 runner，并进同一个框）：
-        第 0 步 服务来源（deploy runner 卡片 / 外接）→ precheck（auto）→ runner 行 → clean（按 clean_runner 声明自动注入）。
+        #111 主路径重排：① 服务来源 → ② 测试配置 → ③ 高级配置（折叠）→ ④ 提交检查与动作。
+        保持单页专业表单（不做成向导）；名称等可选信息跟随所属区块，不再单独占一张卡。
       */}
-      <Card>
+
+      {/* ① 服务来源：平台部署 XOR 已有服务（互斥由提交校验把关，§10.1）；切换保留各自草稿 */}
+      <Card data-testid="submit-source-card">
         <CardHeader
           tone="primary"
-          title="runner 管道"
-          sub="deploy → precheck → runners → clean"
-          actions={
-            <>
-              <span className="text-2xs text-fg-3">执行环境</span>
-              <Input
-                ref={registerField('task.runners[0].execution.profile')}
-                value={profile}
-                onChange={(e) => setProfile(e.target.value)}
-                aria-label="执行环境 profile"
-                aria-invalid={Boolean(issueFor('task.runners[0].execution.profile'))}
-                title={issueFor('task.runners[0].execution.profile') ?? undefined}
-                placeholder="k8s-npu"
-                className="h-8 w-32 font-mono text-2xs"
-              />
-              <span className="text-2xs text-fg-3">precheck</span>
-              <Segmented<PrecheckMode>
-                ariaLabel="precheck 模式"
-                value={precheck}
-                onChange={setPrecheck}
-                options={[
-                  { value: 'auto', label: 'auto 注入' },
-                  { value: 'off', label: 'off' },
-                ]}
-              />
-              <Button size="sm" data-testid="add-runner" icon={<Plus className="size-3" aria-hidden />} onClick={addRunner}>
-                添加 runner
-              </Button>
-            </>
-          }
+          title="服务来源"
+          sub="平台部署 / 已有服务二选一；切换形态时各自填过的内容会保留"
         />
         <CardBody className="flex flex-col gap-3">
-          {/* ---------- 第 0 步 · 服务来源 ---------- */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Segmented<'deploy' | 'service'>
+              ariaLabel="服务来源形态"
+              testId="source-mode"
+              value={sourceMode}
+              onChange={switchSourceMode}
+              options={[
+                { value: 'deploy', label: '平台部署' },
+                { value: 'service', label: '已有服务' },
+              ]}
+            />
+            {deployRunnerObj ? (
+              <span className="flex flex-wrap items-center gap-1.5 text-xs text-fg-3">
+                当前：
+                <Tag mono>
+                  {deployRunnerObj.name} v{deployRunnerObj.version}
+                </Tag>
+                <Tag mono>{deployRunnerObj.input_format}</Tag>
+                {deployRunnerObj.clean_runner ? (
+                  <Tag data-testid="deploy-clean-tag">提交后自动注入 clean：{deployRunnerObj.clean_runner}</Tag>
+                ) : (
+                  <Tag data-testid="deploy-clean-tag">无 clean 阶段</Tag>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  data-testid="deploy-runner-detail"
+                  aria-label="查看服务来源的 Runner 详情"
+                  onClick={() => setDetailRunner(deployRunnerObj.name)}
+                >
+                  详情
+                </Button>
+              </span>
+            ) : sourceMode === 'service' ? (
+              <span className="text-xs text-fg-3">静态服务直接注入（AG_SERVED_URL），不产生部署与 clean 阶段</span>
+            ) : null}
+          </div>
+
           <section
             data-testid="source-block"
             className="flex flex-col gap-2.5 rounded-lg border border-dashed border-line-strong px-3 py-3"
-            aria-label="服务来源（第 0 步）"
+            aria-label="服务来源"
           >
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-2xs text-fg-2">0</span>
-              <span className="text-sm font-semibold text-fg">服务来源</span>
-            </div>
-
-            {/* 服务来源下拉（用户 2026-11-11：与 runner 行同一形态）：Genet（默认）/ Mock / 已有服务。
-                列表仍是目录真相（role=deploy 全量），「已有服务」= 外接三元组（不部署，无 deploy 阶段）。 */}
-            <Field label="服务来源" required htmlFor="deploy-runner-select"
-              error={issueFor('task.deploy.runner')}>
-              {/* 标签贴着输入框同一行：Field 的 label 在上方，标签放 select 右侧并对齐 */}
-              <div className="flex items-center gap-2">
-                <Select
-                  id="deploy-runner-select"
-                  aria-label="服务来源"
-                  data-testid="deploy-runner"
-                  value={deployRunnerName ?? ''}
-                  onChange={(e) => setDeployRunnerName(e.target.value)}
-                  className="h-8 w-80 text-xs"
-                >
-                  {runners.loading && deployRunners.length === 0 ? (
-                    <option value="">（Runner 目录加载中…）</option>
-                  ) : null}
-                  {deployRunners.map((runner: Runner) => (
-                    <option key={runner.name} value={runner.name}>
-                      {runner.display_name || runner.name}
-                      {runner.name === defaultDeployRunnerName ? '（默认）' : ''} · {runner.name} v{runner.version}
-                    </option>
-                  ))}
-                  <option value="">已有服务（不部署，直接填地址）</option>
-                </Select>
-                {deployRunnerObj ? (
-                  <span className="flex shrink-0 items-center gap-1">
-                    <Tag mono>{deployRunnerObj.input_format}</Tag>
-                    {deployRunnerObj.clean_runner ? (
-                      <Tag data-testid="deploy-clean-tag">clean: {deployRunnerObj.clean_runner}</Tag>
-                    ) : (
-                      <Tag data-testid="deploy-clean-tag">无 clean 阶段</Tag>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      data-testid="deploy-runner-detail"
-                      aria-label="查看服务来源的 Runner 详情"
-                      onClick={() => setDetailRunner(deployRunnerObj.name)}
-                    >
-                      详情
-                    </Button>
-                  </span>
-                ) : null}
-              </div>
-            </Field>
-
             {deployRunnerName ? (
               <div className="flex flex-col gap-2">
+                <Field label="部署 Runner" required htmlFor="deploy-runner-select" error={issueFor('task.deploy.runner')}>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      id="deploy-runner-select"
+                      aria-label="服务来源 Runner"
+                      data-testid="deploy-runner"
+                      value={deployRunnerName ?? ''}
+                      onChange={(e) => setDeployRunnerName(e.target.value)}
+                      className="h-9 w-80 text-sm"
+                    >
+                      {runners.loading && deployRunners.length === 0 ? (
+                        <option value="">（Runner 目录加载中…）</option>
+                      ) : null}
+                      {deployRunners.map((runner: Runner) => (
+                        <option key={runner.name} value={runner.name}>
+                          {runner.display_name || runner.name}
+                          {runner.name === defaultDeployRunnerName ? '（默认）' : ''} · {runner.name} v{runner.version}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                </Field>
+
                 {deployIsYaml ? (
                   <>
                     {/* CodeMirror 6：真语法高亮 + 行号 + 横向滚动；语法错误按行列标行 */}
@@ -908,17 +808,41 @@ export function SubmitPage() {
                       hint="2 空格缩进"
                       error={lintPos}
                     />
+                    {/*
+                      #111：空白 YAML ≠「配置有效」。三态分开——
+                      empty：中性「尚未填写」；error：语法错误；ok：语法有效（并注明完整性归提交校验）。
+                    */}
                     <p
-                      data-testid="deploy-yaml-error"
-                      data-state={deployParse.error ? 'error' : 'ok'}
+                      data-testid="deploy-yaml-status"
+                      data-state={deployInput.trim() ? (deployParse.error ? 'error' : 'ok') : 'empty'}
                       role="status"
                       aria-live="polite"
-                      className={cn('text-2xs', deployParse.error ? 'text-danger-text' : 'text-success-text')}
+                      className={cn(
+                        'text-xs',
+                        deployParse.error && deployInput.trim()
+                          ? 'text-danger-text'
+                          : deployInput.trim()
+                            ? 'text-success-text'
+                            : 'text-fg-3',
+                      )}
                     >
-                      {deployParse.error
-                        ? `${deployParse.pos ? `第 ${deployParse.pos.line} 行第 ${deployParse.pos.col} 列：` : ''}${deployParse.error}`
-                        : '✓ 语法有效'}
+                      {!deployInput.trim()
+                        ? '尚未填写部署描述（可用下方示例填入；空描述能否提交以校验为准）'
+                        : deployParse.error
+                          ? `${deployParse.pos ? `第 ${deployParse.pos.line} 行第 ${deployParse.pos.col} 列：` : ''}${deployParse.error}`
+                          : '✓ 语法有效（YAML 可解析；配置是否完整以提交校验为准）'}
                     </p>
+                    {deployParse.error && deployInput.trim() ? (
+                      <p
+                        data-testid="deploy-yaml-error"
+                        data-state="error"
+                        role="alert"
+                        className="text-xs text-danger-text"
+                      >
+                        {deployParse.pos ? `第 ${deployParse.pos.line} 行第 ${deployParse.pos.col} 列：` : ''}
+                        {deployParse.error}
+                      </p>
+                    ) : null}
                   </>
                 ) : (
                   <>
@@ -947,7 +871,7 @@ export function SubmitPage() {
                       >
                         {deployJsonlIssues.slice(0, 8).map((issue, issueIndex) => (
                           <li key={`${issue.line}-${issue.field ?? issue.kind}-${issueIndex}`}>
-                            <span className="text-2xs leading-[16px] text-danger-text">
+                            <span className="text-xs leading-[20px] text-danger-text">
                               第 {issue.line} 行
                               {issue.field ? <code className="mx-1 font-mono">{issue.field}</code> : null}· {issue.message}
                             </span>
@@ -996,6 +920,59 @@ export function SubmitPage() {
               </div>
             )}
           </section>
+        </CardBody>
+      </Card>
+
+      {/*
+        ② 测试配置（#111 的视觉主体）：Task 名称 + runner 行。
+        管道顺序（deploy → precheck(auto) → runners → clean）作为说明保留；
+        precheck / 执行环境 / env / 凭据归入③高级配置，不与主路径抢注意力。
+      */}
+      <Card data-testid="submit-runners-card">
+        <CardHeader
+          tone="primary"
+          title="测试配置"
+          sub="每个 runner 一个通用输入框（按 Runner 的 input_format）；示例可查看 / 填入"
+          actions={
+            <Button size="sm" data-testid="add-runner" icon={<Plus className="size-3" aria-hidden />} onClick={addRunner}>
+              添加 runner
+            </Button>
+          }
+        />
+        <CardBody className="flex flex-col gap-3">
+          {/*
+            C8：maxlength=200（后端 D-58，按 rune 上限）+ 实时计数。
+            粘贴可以绕过 maxlength，所以超限时这里也会立刻报红并把「提交」置灰（不等后端 400）。
+          */}
+          <Field
+            label="Task 名称"
+            htmlFor="task-name"
+            hint="可选：留空时平台自动生成（默认使用 Task ID）"
+            error={nameError}
+          >
+            <div id="task-name-row" className="flex items-center gap-2">
+              <Input
+                id="task-name"
+                ref={registerField('task.name')}
+                value={name}
+                maxLength={NAME_MAX_RUNES}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="如 qwen3-32b-daily（留空自动生成）"
+                aria-invalid={Boolean(nameError)}
+                className="flex-1"
+              />
+              <span
+                data-testid="task-name-counter"
+                aria-live="polite"
+                className={cn(
+                  'shrink-0 font-mono text-2xs tabular-nums',
+                  nameTooLong ? 'font-medium text-danger-text' : 'text-fg-3',
+                )}
+              >
+                已输入 {nameRunes} / {NAME_MAX_RUNES}
+              </span>
+            </div>
+          </Field>
 
           {/* ---------- runner 行 ---------- */}
           {/* A4：0 个 runner 时说清「为什么不能提交」，就在会被删空的那块下面 */}
@@ -1031,29 +1008,6 @@ export function SubmitPage() {
                   {issue.message}
                 </p>
               ))}
-            </div>
-          ) : null}
-
-          {precheck === 'auto' ? (
-            <div className="rounded-md border border-line-soft bg-surface-2 px-3 py-2 text-2xs leading-[16px] text-fg-2">
-              <span className="font-medium text-fg">precheck 自动注入：</span>
-              {precheckRunner ? (
-                <>
-                  <Tag mono className="ml-2">
-                    {precheckRunner.name} · {precheckRunner.version}
-                  </Tag>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    data-testid="precheck-detail"
-                    aria-label="查看 precheck 的 Runner 详情"
-                    className="ml-1"
-                    onClick={() => setDetailRunner(precheckRunner.name)}
-                  >
-                    详情
-                  </Button>
-                </>
-              ) : null}
             </div>
           ) : null}
 
@@ -1223,41 +1177,260 @@ export function SubmitPage() {
             )
           })}
         </CardBody>
-        <CardFooter className="sticky bottom-0 z-10 rounded-b-xl border-t border-line-soft bg-surface shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
-          <span>
+      </Card>
+
+      {/*
+        ③ 高级配置（#111）：环境变量、凭据、precheck、执行环境弱化为折叠分组。
+        能力一个不少（§12.4 Task 级注入、precheck auto/off、execution.profile）；
+        有已填内容（如重试回填）时自动展开，避免"藏了东西"的错觉。
+      */}
+      <Card data-testid="submit-advanced-card">
+        <CardHeader
+          tone="muted"
+          title="高级配置"
+          sub="环境变量、凭据、precheck 与执行环境——默认值即可运行"
+        />
+        <CardBody>
+          <details ref={advancedRef} onToggle={() => (advancedTouched.current = true)} data-testid="advanced-section">
+            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-fg-2 [&::-webkit-details-marker]:hidden">
+              <span className="text-fg-3 transition-transform" aria-hidden>
+                ▸
+              </span>
+              展开 / 收起高级配置
+              {envRows.length + secretRows.length > 0 ? (
+                <Badge tone="muted">已填 {envRows.length + secretRows.length} 项</Badge>
+              ) : (
+                <Badge tone="muted">当前为默认值</Badge>
+              )}
+            </summary>
+
+            <div className="mt-4 flex flex-col gap-5">
+              {/* 环境变量与凭据：Task 粒度，注入该 Task 下全部 runner（§12.4） */}
+              <section className="flex flex-col gap-2" aria-label="环境变量与凭据">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold text-fg">环境变量与凭据</h3>
+                  <span className="text-2xs text-fg-3">Task 级填一次，注入全部 runner；凭据只填引用名</span>
+                  <span className="ml-auto flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      data-testid="add-env"
+                      icon={<Plus className="size-3" aria-hidden />}
+                      onClick={() => setEnvRows((p) => [...p, { key: '', value: '' }])}
+                    >
+                      环境变量
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      data-testid="add-secret"
+                      icon={<Plus className="size-3" aria-hidden />}
+                      onClick={() => setSecretRows((p) => [...p, { key: '', value: '' }])}
+                    >
+                      凭据引用
+                    </Button>
+                  </span>
+                </div>
+                {/* 默认 0 行：不预填示例（那是要提交的内容，不是装饰） */}
+                {envRows.length === 0 && secretRows.length === 0 ? (
+                  <p data-testid="env-empty-hint" className="text-xs text-fg-3">
+                    暂无，需要时点右侧添加。
+                  </p>
+                ) : null}
+                {envRows.map((row, index) => (
+                  <div key={`env-${index}`} className="flex items-center gap-2">
+                    <Input
+                      value={row.key}
+                      aria-label={`env 键 ${index + 1}`}
+                      placeholder="LOG_LEVEL"
+                      className="w-48"
+                      onChange={(e) =>
+                        setEnvRows((prev) => prev.map((item, i) => (i === index ? { ...item, key: e.target.value } : item)))
+                      }
+                    />
+                    <Input
+                      value={row.value}
+                      aria-label={`env 值 ${index + 1}`}
+                      placeholder="info"
+                      onChange={(e) =>
+                        setEnvRows((prev) => prev.map((item, i) => (i === index ? { ...item, value: e.target.value } : item)))
+                      }
+                    />
+                    <Button size="sm" variant="ghost" aria-label="删除该环境变量" onClick={() => removeKeyValueRow('env', index)}>
+                      <Trash2 className="size-3.5" aria-hidden />
+                    </Button>
+                  </div>
+                ))}
+                {secretRows.map((row, index) => (
+                  <div key={`secret-${index}`} className="flex items-center gap-2">
+                    <Input
+                      value={row.key}
+                      aria-label={`secret 键 ${index + 1}`}
+                      placeholder="ENDPOINT_API_KEY"
+                      className="w-48"
+                      onChange={(e) =>
+                        setSecretRows((prev) => prev.map((item, i) => (i === index ? { ...item, key: e.target.value } : item)))
+                      }
+                    />
+                    <Input
+                      value={row.value}
+                      aria-label={`secret 引用 ${index + 1}`}
+                      placeholder="endpoint/prod-qwen（只填引用名，不填明文）"
+                      onChange={(e) =>
+                        setSecretRows((prev) => prev.map((item, i) => (i === index ? { ...item, value: e.target.value } : item)))
+                      }
+                    />
+                    <Button size="sm" variant="ghost" aria-label="删除该凭据引用" onClick={() => removeKeyValueRow('secret', index)}>
+                      <Trash2 className="size-3.5" aria-hidden />
+                    </Button>
+                  </div>
+                ))}
+              </section>
+
+              {/* precheck 与执行环境（原卡头散件归拢到这里） */}
+              <section className="flex flex-col gap-2" aria-label="precheck 与执行环境">
+                <h3 className="text-sm font-semibold text-fg">precheck 与执行环境</h3>
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs text-fg-3">precheck</span>
+                    <Segmented<PrecheckMode>
+                      ariaLabel="precheck 模式"
+                      value={precheck}
+                      onChange={setPrecheck}
+                      options={[
+                        { value: 'auto', label: 'auto 注入' },
+                        { value: 'off', label: 'off' },
+                      ]}
+                    />
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs text-fg-3">执行环境</span>
+                    <Input
+                      ref={registerField('task.runners[0].execution.profile')}
+                      value={profile}
+                      onChange={(e) => setProfile(e.target.value)}
+                      aria-label="执行环境 profile"
+                      aria-invalid={Boolean(issueFor('task.runners[0].execution.profile'))}
+                      title={issueFor('task.runners[0].execution.profile') ?? undefined}
+                      placeholder="k8s-npu"
+                      className="h-9 w-40 font-mono text-xs"
+                    />
+                  </span>
+                </div>
+                {precheck === 'auto' ? (
+                  <div className="rounded-md border border-line-soft bg-surface-2 px-3 py-2 text-xs leading-[20px] text-fg-2">
+                    <span className="font-medium text-fg">precheck 自动注入：</span>
+                    {precheckRunner ? (
+                      <>
+                        <Tag mono className="ml-2">
+                          {precheckRunner.name} · {precheckRunner.version}
+                        </Tag>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          data-testid="precheck-detail"
+                          aria-label="查看 precheck 的 Runner 详情"
+                          className="ml-1"
+                          onClick={() => setDetailRunner(precheckRunner.name)}
+                        >
+                          详情
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-xs leading-[20px] text-fg-3">precheck 关闭：跳过就绪探测，runner 直接对服务执行。</p>
+                )}
+              </section>
+            </div>
+          </details>
+        </CardBody>
+      </Card>
+
+      {/*
+        ④ 提交检查与动作（#111）：三枚检查 chip + 校验/提交按钮，sticky 在长页面任何位置都可达。
+        层级：「提交」是页面唯一主按钮（蓝色），「校验」是次级动作。
+      */}
+      <div
+        data-testid="submit-footer"
+        className="sticky bottom-0 z-10 mt-1 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface/95 px-4 py-3 shadow-overlay backdrop-blur-sm"
+      >
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-fg-3">提交检查：</span>
+          <span
+            data-testid="submit-check-service"
+            className={cn(
+              'inline-flex h-6 items-center gap-1 rounded-full border px-2',
+              serviceReady ? 'border-success/40 bg-success-weak text-success-text' : 'border-danger/40 bg-danger-weak text-danger-text',
+            )}
+          >
+            服务来源{serviceReady ? '已就绪' : '未完成'} ·{' '}
+            {deployRunnerName === ''
+              ? serviceUrl.trim()
+                ? '已有服务'
+                : '已有服务（URL 未填）'
+              : deployRunnerObj
+                ? `平台部署 ${deployRunnerObj.name}`
+                : '平台部署（未选择 Runner）'}
+          </span>
+          <span
+            data-testid="submit-check-runners"
+            className={cn(
+              'inline-flex h-6 items-center gap-1 rounded-full border px-2',
+              runnerIssueCount === 0 ? 'border-line bg-surface-2 text-fg-2' : 'border-danger/40 bg-danger-weak text-danger-text',
+            )}
+          >
+            Runner 输入
+            {runnerDrafts.length === 0
+              ? '未添加（只验证服务）'
+              : `${runnerDrafts.length} 行${runnerIssueCount > 0 ? ` · ${runnerIssueCount} 条问题` : ' · 无问题'}`}
+          </span>
+          <span
+            data-testid="submit-check-validate"
+            className={cn(
+              'inline-flex h-6 items-center gap-1 rounded-full border px-2',
+              validateState === 'ok'
+                ? 'border-success/40 bg-success-weak text-success-text'
+                : validateState === 'bad'
+                  ? 'border-danger/40 bg-danger-weak text-danger-text'
+                  : 'border-line bg-surface-2 text-fg-3',
+            )}
+          >
+            {validateState === 'ok' ? '校验通过' : validateState === 'bad' ? `校验未通过（${issues.length} 条）` : '未校验'}
+          </span>
+          <span className={cn(blocked || submitDisabled ? 'text-danger-text' : 'text-fg-3')}>
             {blocked
               ? `当前角色 ${auth.role ?? 'viewer'} 只读：${blocked}`
               : submitDisabled
                 ? submitTitle
                 : ''}
           </span>
-          <div className="ml-auto flex items-center gap-2">
-            <Button
-              size="sm"
-              data-testid="validate-task"
-              loading={dryRunning}
-              disabled={submitDisabled}
-              aria-disabled={submitDisabled}
-              title={submitTitle}
-              onClick={() => void onDryRun()}
-            >
-              校验
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              data-testid="submit-task"
-              loading={submitting}
-              disabled={submitDisabled}
-              aria-disabled={submitDisabled}
-              title={submitTitle}
-              onClick={() => void onSubmit()}
-            >
-              提交
-            </Button>
-          </div>
-        </CardFooter>
-      </Card>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            data-testid="validate-task"
+            variant="secondary"
+            loading={dryRunning}
+            disabled={submitDisabled}
+            aria-disabled={submitDisabled}
+            title={submitTitle}
+            onClick={() => void onDryRun()}
+          >
+            校验
+          </Button>
+          <Button
+            variant="primary"
+            data-testid="submit-task"
+            loading={submitting}
+            disabled={submitDisabled}
+            aria-disabled={submitDisabled}
+            title={submitTitle}
+            onClick={() => void onSubmit()}
+          >
+            提交
+          </Button>
+        </div>
+      </div>
 
       {/* 与 Runner 目录页是同一个抽屉组件：参数 schema 里也能直接复制进当前 runner 的输入框 */}
       <RunnerDrawer

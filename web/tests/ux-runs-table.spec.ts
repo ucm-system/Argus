@@ -169,20 +169,67 @@ test('④ 空结果态：筛选到没有数据时给出空态与「清除过滤�
   await expect(page.locator('tbody tr').first()).toBeVisible()
 })
 
-test('⑤ q 只在本页内查找：文案写清「在当前页内」，且不改变 total', async ({ page }) => {
+test('⑤ q 只在本页内查找：输入框写明「在当前页查找」，且不改变 total', async ({ page }) => {
   await page.goto('/?page_size=10')
   await expect(page.getByTestId('pagination-total')).toBeVisible({ timeout: 15_000 })
   const totalBefore = await page.getByTestId('pagination-total').innerText()
 
-  const search = page.getByLabel('搜索名称 / ID')
+  const search = page.getByLabel('在当前页查找名称 / ID')
   await expect(search).toBeVisible()
   await expect(page.getByText('筛选本页已加载的 Run')).toHaveCount(0)
 
   await search.fill('qwen3')
   await expect(page).toHaveURL(/q=qwen3/)
+  // 范围说明在输入框旁的标题行就可见（#113：不能只靠 title 属性事后解释）
+  await expect(page.getByText(/在当前页 \d+ 条内查找「qwen3」/)).toBeVisible()
   // 页内命中提示出现，但 total 不变（服务端没有全文搜索）
-  await expect(page.getByText(/本页 \d+ 条里命中 \d+ 条/)).toBeVisible()
+  await expect(page.getByTestId('search-scope-note')).toBeVisible()
+  await expect(page.getByTestId('search-scope-note')).toContainText('页内查找，不跨页')
   await expect(page.getByTestId('pagination-total')).toHaveText(totalBefore)
+})
+
+test('⑤b 搜其它页才存在的完整 Task ID：空态说明范围，不谎称 Task 不存在（#113）', async ({ page }) => {
+  // mock 第 11 条 t-20261104-0011 在第 2 页（page_size=10）；第 1 页搜它的完整 ID
+  await page.goto('/?page_size=10')
+  await expect(page.getByTestId('pagination-total')).toBeVisible({ timeout: 15_000 })
+  const totalBefore = await page.getByTestId('pagination-total').innerText()
+
+  const search = page.getByLabel('在当前页查找名称 / ID')
+  await search.fill('t-20261104-0011')
+  await expect(page).toHaveURL(/q=t-20261104-0011/)
+
+  const empty = page.getByTestId('tasks-empty')
+  await expect(empty).toBeVisible()
+  // 空态只说"当前页没有匹配"，绝不把范围外的 ID 说成"没有 Task / 放宽列筛选"
+  await expect(empty).toContainText('当前页没有匹配「t-20261104-0011」的 Task')
+  await expect(empty).toContainText('查找只在当前页 10 条内进行，不跨页')
+  await expect(empty).toContainText('要找的 Task 可能不在这一页')
+  await expect(empty).not.toContainText('放宽列筛选')
+  await expect(empty).not.toContainText('当前筛选条件下没有 Task')
+
+  // 未设置列筛选时,"清除页内查找"按钮直接恢复本页列表
+  await page.getByTestId('empty-clear-filters').click()
+  await expect(page).not.toHaveURL(/q=/)
+  await expect(page.locator('tbody tr').first()).toBeVisible()
+  await expect(page.getByTestId('pagination-total')).toHaveText(totalBefore)
+
+  // 同一个 ID 在它自己的那页能搜到（证明是分页范围问题，不是 ID 不存在）
+  await page.goto('/?page_size=10&page=2')
+  await expect(page.getByTestId('pagination-total')).toBeVisible({ timeout: 15_000 })
+  await search.fill('t-20261104-0011')
+  await expect(page.locator('tbody tr')).toHaveCount(1)
+  await expect(page.locator('tbody tr').first()).toContainText('t-20261104-0011')
+})
+
+test('⑤c 关键字 + 列筛选同时存在：空态两种条件都提到（#113）', async ({ page }) => {
+  await page.goto('/?submitter=不存在的提交人&page_size=10')
+  await expect(page.getByTestId('tasks-empty')).toBeVisible({ timeout: 15_000 })
+
+  const search = page.getByLabel('在当前页查找名称 / ID')
+  await search.fill('qwen3')
+  const empty = page.getByTestId('tasks-empty')
+  await expect(empty).toContainText('当前页没有匹配「qwen3」的 Task')
+  await expect(empty).toContainText('放宽列筛选')
 })
 
 test('⑥ 列筛选候选值随其它列变化（facets 每次筛选都重拉）', async ({ page }) => {

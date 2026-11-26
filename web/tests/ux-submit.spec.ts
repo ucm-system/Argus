@@ -16,6 +16,15 @@ async function openSubmit(page: Page): Promise<void> {
   await expect(page.getByLabel('runner 1 Runner')).toContainText('aisbench', { timeout: 15_000 })
 }
 
+/** 环境变量 / 凭据在「高级配置」折叠区里（#111）：需要先展开 */
+async function openAdvanced(page: Page): Promise<void> {
+  const section = page.getByTestId('advanced-section')
+  if ((await section.getAttribute('open')) === null) {
+    await section.locator('summary').click()
+  }
+  await expect(page.getByTestId('add-env')).toBeVisible()
+}
+
 /** 把 YAML 编辑器内容整体换掉（CodeMirror 是 contenteditable，不能直接 fill 语义） */
 async function replaceYaml(page: Page, text: string): Promise<void> {
   const editor = page.getByLabel('部署描述 YAML')
@@ -73,6 +82,7 @@ test('② 删掉最后一个 runner：提交始终可用；撤销恢复原行', 
 
 test('③ 环境变量删除后给 undo toast，撤销恢复原位置原值', async ({ page }) => {
   await openSubmit(page)
+  await openAdvanced(page)
 
   // 默认 0 行：先手动加一行并填好，再删（验证的是「删除 → 撤销」这条链路）
   await expect(page.getByLabel('env 键 1')).toHaveCount(0)

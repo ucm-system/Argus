@@ -24,6 +24,15 @@ async function openSubmit(page: Page): Promise<void> {
   await expect(page.getByLabel('runner 1 Runner')).toContainText('aisbench', { timeout: 15_000 })
 }
 
+/** 环境变量 / 凭据在「高级配置」折叠区里（#111）：需要先展开 */
+async function openAdvanced(page: Page): Promise<void> {
+  const section = page.getByTestId('advanced-section')
+  if ((await section.getAttribute('open')) === null) {
+    await section.locator('summary').click()
+  }
+  await expect(page.getByTestId('add-env')).toBeVisible()
+}
+
 /** 把 YAML 编辑器内容整体换掉（CodeMirror 是 contenteditable，不能直接 fill） */
 async function replaceYaml(page: Page, text: string): Promise<void> {
   const editor = page.getByLabel('部署描述 YAML')
@@ -50,7 +59,8 @@ test('② 提交页默认值全空：Task 名 / runner 名 / 参数 / env / secr
   await expect(args).toHaveValue('')
   await expect(args).toHaveAttribute('placeholder', /\"dataset\"/)
 
-  // 环境变量 / 凭据引用默认 0 行（不再预填 LOG_LEVEL=info 与 ENDPOINT_API_KEY）
+  // 环境变量 / 凭据引用默认 0 行（不再预填 LOG_LEVEL=info 与 ENDPOINT_API_KEY）；折叠在高级配置里
+  await openAdvanced(page)
   await expect(page.getByLabel('env 键 1')).toHaveCount(0)
   await expect(page.getByLabel('secret 键 1')).toHaveCount(0)
   await expect(page.getByTestId('env-empty-hint')).toBeVisible()
@@ -198,8 +208,31 @@ test('⑤ YAML 语法错误：报错带行列，修好后标记消失', async ({
   await expect(page.locator('.cm-yaml-error-dot').first()).toBeVisible()
 
   await replaceYaml(page, 'provider: genet\nparameters:\n  model: Qwen3-32B')
-  await expect(error).toHaveAttribute('data-state', 'ok')
+  // #111：三态状态行——修好后回到「语法有效」，不再是"错误条常驻但内容说 OK"
+  const status = page.getByTestId('deploy-yaml-status')
+  await expect(status).toHaveAttribute('data-state', 'ok')
+  await expect(status).toContainText('语法有效')
   await expect(page.locator('.cm-yaml-error-mark')).toHaveCount(0)
+})
+
+test('⑤b 空白 YAML 不被表达为「配置有效」（#111）：中性「尚未填写」，示例可一键填入', async ({ page }) => {
+  await openSubmit(page)
+
+  const status = page.getByTestId('deploy-yaml-status')
+  await expect(status).toHaveAttribute('data-state', 'empty')
+  await expect(status).toContainText('尚未填写部署描述')
+  await expect(status).not.toContainText('语法有效')
+  // 页面上不存在"语法有效"的绿色结论（空白 ≠ 有效）
+  await expect(page.getByText('✓ 语法有效')).toHaveCount(0)
+
+  // 示例填入后：语法有效，但明确注明"配置完整性以提交校验为准"
+  const example = page.getByTestId('deploy-example')
+  await expect(example).toBeVisible()
+  await example.locator('summary').click()
+  await example.getByTestId('deploy-fill-example').click()
+  await expect(status).toHaveAttribute('data-state', 'ok')
+  await expect(status).toContainText('语法有效')
+  await expect(status).toContainText('以提交校验为准')
 })
 
 /* ============================================================ 6. 页脚 API 链接 */

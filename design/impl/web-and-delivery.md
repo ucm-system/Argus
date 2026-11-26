@@ -46,13 +46,13 @@ web/
 
 | 路由 | 页面 | 右栏 | 数据来源 | 原型截图 |
 |---|---|---|---|---|
-| `/` | **概览 = 系统状态 + 全量 Task 表**（D-62）：KPI 四卡（进行中 / 排队中 / 成功率 / Runner 数）+ **完整 Task 表格**（Excel 式列筛选 + 游标分页 + 深链 URL）；右上「新建 Task」。**不再有独立的运行列表页** | 无（宽表，右栏取消；排队信息并入 KPI 区） | `GET /tasks`、`GET /tasks/facets`、`GET /queue-status`（30s 轮询） | `dashboard.png` |
+| `/` | **概览 = 系统状态 + 全量 Task 表**（D-62）：KPI 四卡（紧凑档：p-4 + 24px 数值）+ **完整 Task 表格**（Excel 式列筛选 + 分页 + 深链 URL）；「进度 / 结果」列把**执行进度**（已结束 E / T，运行中标注部署排队或执行中）与**执行结果**（失败 / 成功 / 跳过 / 取消分段，失败最先）分开表达（#114，口径 = `succeeded+failed+skipped+canceled` / total）；右上「新建 Task」。搜索框只做**页内查找**（`GET /tasks` 契约无名称/ID 查询参数，未知过滤字段返回 400）：输入框 placeholder、命中计数与空态都写明"在当前页 N 条内查找，不跨页"，只有关键字时空态不提示"放宽列筛选"（#113；全量搜索需后端支持，单独开 Issue） | 无（宽表，右栏取消；排队信息并入 KPI 区） | `GET /tasks`、`GET /tasks/facets`、`GET /queue-status`（30s 轮询） | `dashboard.png` |
 | `/runs` | **仅作兼容重定向**：`/runs?<query>` → `/?<query>`（保留全部筛选与分页参数，旧链接与文档不失效）；`/runs/{id}` → `/tasks/{id}` | — | — | `runs.png` |
 | `/tasks/$taskId` | 详情：概要 kv、**runner 管道时间线**（串行链路：deploy → pre_check → tests → clean，逐节点展开）、attempt 切换、节点详情（deploy / runner） | 事件时间线（首屏 `GET /tasks/{id}/events/history`，之后由 SSE 增量） | `GET /tasks/{id}` + `events/history` + SSE | `run-detail.png` |
 | `/tasks/$taskId?tab=report` | 报告：指标表（按 labels 分组；仅 `result.json` 存在时渲染——D-74 三选一，仅 html/csv 的 runner 以产物预览/下载为主）、`report.md`、产物下载 | 报告分工说明 | `GET /tasks/{id}/attempts/{n}/runners/{seq}/result`、`GET /tasks/{id}/report.md`、`GET /tasks/{id}/artifacts`、`GET /tasks/{id}/files?path=` | `run-detail.png` 的「结果指标」卡 |
 | `/tasks/$taskId?node=runner:N&tab=logs` | 日志：runner 执行记录级定位、跟随/分页 | 日志边界说明 | `GET /tasks/{id}/attempts/{n}/runners/{seq}/logs?stream=stdout&follow=1`（fetch 流） | `run-detail.png` |
 | `/tasks/$taskId?node=deploy&pod=<pod>` | 部署 Pod 日志：按 Pod 分页签 + 重启/gap 标记 | Pod 拓扑与区间；**排队中显示 deploy-state.json 的 phase / 水位 / 已等待时长**（无位次，D-46） | `GET /tasks/{id}/deploy-state`、`GET /tasks/{id}/attempts/{n}/runners/{deploy_seq}/logs`；排队期无 Pod 时显示"尚未产生 Pod" | `deploy-logs.png` |
-| `/submit` | 提交 Task：一张"服务来源"卡两形态（**部署 XOR 外接**，§10.1 互斥）+ env/secrets + runner 列表（每 runner 一个输入框，按 `input_format` 占位） | 参数说明（只读，来自 `runner.yaml.parameters`） | `GET /runners`、`POST /tasks?dry_run=true`、`POST /tasks` | `submit.png` / `submit-no-deploy.png` |
+| `/submit` | 提交 Task：**单页专业表单，按主次分四块**（#111，不做成向导）：① **服务来源**卡（Segmented「平台部署 / 已有服务」显式互斥，当前 deploy runner 的版本 / input_format / clean 注入可读；YAML 状态三态——空白=中性"尚未填写"、语法错误、语法有效并注明"配置完整性以提交校验为准"，空白不显示"配置有效"）；② **测试配置**卡（Task 名称 + runner 通用输入行，示例可查看 / 填入，校验与格式化就地生效）；③ **高级配置**（env / secrets / precheck / 执行环境折叠为一组，已填内容或 off 时自动展开；能力一个不少）；④ **提交检查与动作**（sticky 页脚：服务来源 / Runner 输入 / 校验状态三枚检查 chip +「校验」secondary +「提交」primary 蓝色主按钮） | 参数说明（只读，来自 `runner.yaml.parameters`） | `GET /runners`、`POST /tasks?dry_run=true`、`POST /tasks` | `submit.png` / `submit-no-deploy.png` |
 | `/runners` | Runner 目录：名称、版本、role、失败策略、`input_format`、参数数、exports/consumes；`?open=<name>` 打开详情抽屉（参数清单、env 声明、placeholder、镜像） | 注册规则 | `GET /runners`、`GET /runners/{name}` | `testers.png` / `tester-drawer.png` |
 | `/profiles` | 执行环境：Profile / 集群 / 命名空间 / 挂载 | 边界说明 | `GET /profiles` | 无独立截图，见 `run-detail.png` 右栏 |
 
@@ -64,7 +64,7 @@ web/
 
 | Task 状态 | `/tasks/$taskId` 默认展示 | 其它内容的去处 |
 |---|---|---|
-| 终态（`succeeded` / `failed` / `service_unavailable` / `canceled`；v1 的 `completed_with_errors` 已并入 `failed`，D-73） | **结果视图**：结论（成功/失败/为什么失败）→ counts → 失败项列表 → **产物与下载**（`report.json` / `report.md` / `metadata.json` / `events.jsonl` / 各 attempt 的 runner 产物与日志 / 部署 Pod 日志，以及一键 `GET /tasks/{id}/bundle` 打包）→ 报告入口 | runner 管道时间线 / attempt 切换 / 实时日志 → 「执行细节」二级视图（折叠不是隐藏：排障一键展开） |
+| 终态（`succeeded` / `failed` / `service_unavailable` / `canceled`；v1 的 `completed_with_errors` 已并入 `failed`，D-73） | **结果视图**：结论（成功/失败/为什么失败）+ **主动作行**——成功 =「查看报告 / 查看结果」（入口按真实产物能力给：有 report 产物进报告，只有 result 产物进对应预览，两者皆无时说明原因、不出死按钮，#115）；失败 =「查看失败日志」一步直达失败 runner 日志，结论按错误类型给人类可读的阶段 / 影响（跳过数注明"前序失败，未执行"）/ 下一步，原始错误码 / 退出码降级为可复制诊断信息条（#116）→ counts（runner 总数 / 已结束 E/T / 成功 / 失败 / 跳过，与列表同口径）→ 失败项列表 → **产物与下载**（`report.json` / `report.md` / `metadata.json` / `events.jsonl` / 各 attempt 的 runner 产物与日志 / 部署 Pod 日志，以及一键 `GET /tasks/{id}/bundle` 打包下载，次级动作）| runner 管道时间线 / attempt 切换 / 实时日志 → 「执行细节」二级视图（折叠不是隐藏：排障一键展开） |
 | 运行中（非终态） | 执行视图：runner 管道时间线 + 实时日志 + 等待原因 +（部署时）deploy-state 的 phase 与已等待时长 | 报告等终态后才有的区块显示占位说明 |
 
 右栏保持"事件流 + 边界说明"两类，不塞主内容；主内容默认不超过 4 个块。
@@ -177,8 +177,9 @@ const onFrame = (e: Envelope) => {
 | 照上次配置 | `?from=<task_id>` 时用 `GET /tasks/{id}/manifest` 回填最近一次 Task 的 runner 组合与 `input` **原文**（§11.2 唯一允许的预填：填的是上一次的输入） | 不推导、不合并、不"智能补全" |
 | Task `env` | 行编辑器（key / value / 删除 / + 一行），明文可回显可编辑；**Task 级填一次，注入全部 runner**（§12.4） | 不脱敏、不折叠（§12.4 裁决） |
 | `secrets` | key 输入 + 下拉，选项来自 `GET /secrets`，只显示 **名称与说明**；无可选项时给"去登记"文案（仅 admin 可见） | 不回显值、不提供"新建 Secret"内联表单（登记是 admin 独立页） |
-| 服务来源（一张卡两形态，**部署 XOR 外接**，§10.1） | segmented：`部署` → YAML 编辑器（Genet 部署描述，原样作为 service-deploy runner 的输入；平台不解析）；`外接` → `url` / `model_name` / `model_path` 三字段 | 两形态**互斥**（都填/都不填提交被拒），切换时**保留**各自草稿不清空；不提供第三种"既部署又手填" |
+| 服务来源（① 卡，**部署 XOR 已有服务**，§10.1） | Segmented「平台部署 / 已有服务」显式互斥；平台部署 = deploy runner 下拉（runner 引用，Genet 部署描述原样作为其输入，平台不解析）+ 当前 runner 的版本 / input_format / clean 注入声明；已有服务 = `url` / `model_name` / `model_path` 三字段 | 两形态**互斥**（都填/都不填提交被拒），切换时**保留**各自草稿不清空；不提供第三种"既部署又手填"；**空白 YAML 显示中性"尚未填写"，不显示"语法有效 / 配置有效"**——语法有效与配置完整分开表达（#111） |
 | `precheck` | `auto` / `off` 分段 + 显式对象（折叠区） | 不替用户判定"该不该开" |
+| 提交检查区（④ sticky 页脚） | 三枚检查 chip：服务来源（已就绪 / 未完成 + 当前形态与 Runner）、Runner 输入（行数 + 问题数）、校验（通过 / 未通过 N 条 / 未校验）；「校验」secondary、「提交」primary，长页面 sticky 可达（#111） | 不重复堆叠已有错误摘要；chip 只做导航级提示 |
 | dry-run | 提交按钮旁「校验」；`POST /tasks?dry_run=true` 与 `POST /tasks` 用**同一份 Manifest**，返回 `{valid, issues[]}` | 不在输入时实时校验（等于渲染校验），只在点击时调 |
 
 提交前流程：点「提交」→ 先 dry-run → 有 `VALIDATION_ERROR` 就地标红并滚到第一个错误（不弹 toast 堆叠）→ 无错再 `POST /tasks`（**不做幂等**：每次提交都创建新 Task，重复提交就是多个 Task，D-37）→ 成功跳 `/tasks/$id`，toast 显示 Task ID。
@@ -234,6 +235,8 @@ const onFrame = (e: Envelope) => {
 
 **结论：Tailwind CSS v4 + shadcn/ui 为实现基座，原型 CSS 不再作为实现依赖（K-2）。**
 
+- **强调色纪律（#111~#117 UX 改造）**：**蓝色（`--color-primary`）是唯一的行动与交互强调色**——主按钮（shadcn `primary` variant = `bg-primary`，不再用墨黑）、Task ID / 链接与可点击资源、当前导航 / 选中页签 / 选中 Runner、输入框焦点环与关键节点选中态，全部同源；墨色（`--color-ink`）只保留给正文与框架（深色 toast 面）。语义色只表达状态：绿=成功/通过、红=失败/错误、琥珀=等待/警告、灰黑=普通信息与次要操作；不给卡片大面积染色、不用渐变、不用颜色代替文字状态。
+- **字号层级（#117）**：`--text-sm` 14px（正文 / 表格内容）≥ `--text-xs` 13.5px（辅助说明 / 关键操作文字 / sm 按钮 / 徽标）≥ `--text-2xs` 12px（仅非关键元信息：时间戳、mono 引用、表头角标）；11px 档已取消。中文正文、表格内容与关键操作文字不低于 13.5px。
 - **主题映射**：把原型 `tokens.css` 的色板 / 字号 / 圆角 / 间距搬进 shadcn 的 CSS 变量（`--background`、`--foreground`、`--primary`、`--muted-foreground`、`--border`、`--ring`…），放在 `globals.css`；业务组件只用语义变量，**禁止裸 hex**（保留原型的配色纪律）。
 - **组件映射**：原型 card → `Card`；badge → `Badge`；表格 → `Table`（排序/多选可用 TanStack Table）；抽屉 → `Sheet`；弹窗 → `Dialog`；输入 → `Input` / `Textarea` / `Select`；页签 → `Tabs`；提示 → `Sonner`；事件时间线用 `Card` + `ul` 自研。
 - **圣杯布局**：`AppShell` 用 Tailwind grid（`grid-cols-[240px_minmax(0,1fr)_288px]`），DOM 顺序 `main` 在前、两侧 `aside` 用 `col-start` 摆位；断点与原型一致（`>1024` 三列、`768–1024` 隐右栏、`<768` 堆叠）。

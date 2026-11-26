@@ -26,7 +26,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { useIdentity } from '@/hooks/useIdentity'
 import { useLogTail } from '@/hooks/useLogTail'
 import { useTaskEvents } from '@/hooks/useTaskEvents'
-import { attemptStatusMeta, deployStateMeta, isTerminalTask, runnerStatusMeta, waitingReasonLabel } from '@/lib/status'
+import { attemptStatusMeta, deployStateMeta, isTerminalTask, progressHeadline, resultSegments, runnerStatusMeta, waitingReasonLabel } from '@/lib/status'
 import { cn, formatDateTime, formatDuration, runDuration } from '@/lib/utils'
 
 /* ---------------------------------------------------------------- 小件 */
@@ -573,7 +573,7 @@ export function TaskDetailPage() {
         {detail && terminal ? (
           <Button
             size="sm"
-            variant="primary"
+            variant="secondary"
             data-testid="retry-task"
             disabled={Boolean(retryBlocked)}
             title={retryBlocked ?? '把参数带回提交页，修改后生成新 Task'}
@@ -682,8 +682,25 @@ export function TaskDetailPage() {
                 <KV label="结束时间">{formatDateTime(detail.finished_at)}</KV>
                 <KV label="耗时">{formatDuration(runDuration(detail))}</KV>
                 <KV label="当前 attempt">{detail.current_attempt === 0 ? '—（尚未开始）' : `#${detail.current_attempt}`}</KV>
-                <KV label="runner 进度">
-                  {counts ? `${counts.succeeded} / ${counts.total} 成功${counts.failed ? ` · ${counts.failed} 失败` : ''}` : '—'}
+                <KV label="执行进度">
+                  {counts ? (
+                    <span data-testid="detail-progress">
+                      {progressHeadline({
+                        status: detail.status,
+                        counts,
+                        deployPhase: detail.deploy?.phase ?? null,
+                        deployWaitedSeconds: detail.deploy?.waited_seconds ?? null,
+                      })}
+                      <span className="ml-2 text-fg-3">
+                        {resultSegments(counts)
+                          .filter((segment) => ['failed', 'succeeded', 'skipped', 'canceled'].includes(segment.key))
+                          .map((segment) => `${segment.label} ${segment.count}`)
+                          .join(' · ') || '尚无结论'}
+                      </span>
+                    </span>
+                  ) : (
+                    '—'
+                  )}
                 </KV>
                 <KV label="Endpoint">
                   {detail.endpoint ? (

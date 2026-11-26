@@ -14,17 +14,19 @@ type Size = 'sm' | 'md'
  *  - 禁用：`pointer-events-none opacity-50`；
  *  - 图标：尺寸由组件兜底（16px），调用点只写 `data-icon="inline-start|inline-end"`。
  *
- * 变体层级（设计约束，用户 2026-11-13 两轮裁决：先统一、再定款）：
- *  - `primary`  页面级主行动，一页最多一显眼处（新建 Task / 提交 / 重试 / 打包下载）；
+ * 变体层级（设计约束，用户 2026-11-13 两轮裁决 + UX 改造 #111~#117）：
+ *  - `primary`  页面或局部区域的**唯一**主行动（新建 Task / 提交 / 查看报告 / 查看失败日志）。
+ *               统一用**蓝色强调**（--color-primary）：蓝是本产品唯一的行动色，
+ *               墨色只保留给正文与框架，不再当主按钮底色；
  *  - `secondary` 次级但独立的动作（页头入口、失败横幅里的「立即重试」一类）；
  *  - `ghost`    行内轻操作 —— **所有「详情」一律 ghost 文字**（RunnersPage / 提交页 runner 行 / 服务来源 / precheck 同款；
  *               用户原话：描边「太丑了……原来 runner 那个挺好的」）；
  *  - `danger` / `dangerGhost` 破坏性动作（删除 / 取消 Task）。
  */
 const VARIANTS: Record<Variant, string> = {
-  // 主按钮用墨黑（= shadcn 的 --primary），蓝色只留给链接与焦点
+  // 主按钮 = 行动强调色（蓝）：链接 / 选中 / 焦点环 / 主按钮同源，一屏只有一个
   primary:
-    'border border-ink bg-ink text-ink-fg shadow-xs hover:bg-ink/90 hover:border-ink/90',
+    'border border-primary bg-primary text-primary-fg shadow-xs hover:bg-primary/90 hover:border-primary/90',
   secondary:
     'border border-line bg-surface text-fg-2 shadow-xs hover:bg-line-soft hover:text-fg',
   ghost: 'border border-transparent text-fg-2 hover:bg-line-soft hover:text-fg',
