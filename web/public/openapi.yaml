@@ -238,7 +238,7 @@ paths:
       summary: 提交 Task（YAML 或 JSON Manifest；不做幂等）
       description: |
         07 §4：异步编排，202 表示已受理并落库，后续状态由 SSE 或轮询获取。
-        提交体是嵌套 `task:`（D-40）：`deploy` 与 `service` 互斥（都填或都不填拒绝）；`runners[]` 至少 1 条、
+        提交体是嵌套 `task:`（D-40）：`deploy` 与 `service` 互斥（都填或都不填拒绝）；`runners[]` 可为 0（D-77：只验证服务能否启动时只跑 deploy/precheck/clean）、
         至多 200 条（D-57、§12.7）；service-deploy / precheck / service-clean 由平台按提交配置自动注入，
         用户不可手动添加（D-70）。
 
@@ -621,7 +621,8 @@ paths:
         前置条件（不满足 → 409 `CONFLICT`，`detail.reason` 区分）：
 
         - 目标 attempt **含部署**（存在 service-deploy runner 且导出了 `AG_DEPLOY_REF`）；
-          外接模式（无部署）→ `no_deploy`；
+          外接模式（无部署）→ `no_deploy`；`deploy.provider=existing`（已有服务登记，无可拆除
+          对象，clean 未注入）→ `nothing_to_clean`；
         - 该 attempt **无成功的 clean 记录**（service-clean 未 `succeeded`）；
           已有成功记录且未显式 `force=true` → `clean_already_verified`；
         - Task **非终态**（仍在执行）→ `task_running`（避免与管道内的正常 clean 竞争）；
@@ -668,8 +669,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: |
-            状态冲突（`CONFLICT`）：`detail.reason ∈ {no_deploy, clean_already_verified,
-            task_running, clean_replay_in_progress}`（见上方前置条件）。
+            状态冲突（`CONFLICT`）：`detail.reason ∈ {no_deploy, nothing_to_clean,
+            clean_already_verified, task_running, clean_replay_in_progress}`（见上方前置条件）。
           headers:
             X-Request-Id:
               $ref: '#/components/headers/X-Request-Id'
@@ -3965,14 +3966,15 @@ components:
       description: |
         Manifest 的 `task:` 内容。`deploy` 与 `service` 二选一（D-27：两者都缺/都给 → 拒绝提交）。
         未知字段忽略（07 §1）。**没有** `args`、`retry`、`cleanup.policy`（D-66/D-69/D-70）。
-      required: [name]
       oneOf:
         - required: [deploy]
         - required: [service]
       properties:
         name:
           type: string
-          description: Task 名称，展示用；≤200 字符（D-58）
+          description: |-
+            Task 名称，展示用；≤200 字符（D-58）。**可选（D-78）**：缺省时平台以 Task ID
+            作为名称（202 应答与详情里的 `name` 即为生成值；`tasks.manifest` 保持提交原文）。
           example: qwen3-32b-daily
         deploy:
           $ref: '#/components/schemas/DeployManifest'
@@ -4003,7 +4005,7 @@ components:
           description: |
             runner 列表（仅 test / 可选显式 pre_check）；**严格串行执行**（§7.1）。
             注入的 service-deploy / precheck / service-clean 不计入用户列表。
-          minItems: 1     # D-57：至少 1 条
+          # D-77：可为 0（只跑 deploy/precheck/clean 验证服务能否启动）
           maxItems: 200   # §12.7：超限 TASK_TOO_LARGE
           items:
             $ref: '#/components/schemas/RunnerSpec'
@@ -4014,12 +4016,15 @@ components:
         `runners[]` 一项：一个 runner 的提交意图（07 §4.1、ARCHITECTURE §10.1）。
         字段只有 name / runner / version / execution / input / on_failure / timeout_seconds；
         **没有 args（argv 恒空，D-66）、没有 retry（runner 级重试取消，D-69）、没有 cleanup.policy（D-70）**。
-      required: [name, runner, version, execution]
+      required: [runner, version, execution]
       additionalProperties: true
       properties:
         name:
           type: string
-          description: 必填；同 Task 内唯一（报告与 UI 展示用）
+          description: |-
+            可选（D-78）；同 Task 内唯一（报告与 UI 展示用）。缺省时平台按解析出的注册表
+            Runner 名派生执行行名（重名追加序号 `-2`、`-3`…，并避开 `precheck` 等注入行保留名）；
+            派生名只进执行行，`tasks.manifest` 保持提交原文。显式给名时的唯一性 / 保留名约束不变。
         runner:
           type: string
           description: Runner 名称；必须命中已注册白名单（否则 `RUNNER_NOT_FOUND`）；`deploy` / `clean` 角色不可引用（平台自动注入）
@@ -4089,21 +4094,26 @@ components:
       type: object
       description: |
         `deploy`：交给内置 service-deploy runner 的参数（D-70）。`spec` 是 Genet 部署描述原文
-        （YAML 语义，平台不解析，§10.1）；与 `service` 互斥（D-27）。
+        （YAML 语义，平台不解析，§10.1）；与顶层 `service` 互斥（D-27）。
+        v2 provider 组合化：`genet`/`mock` → genet-deploy（mock 接入点指向 fake-genet，
+        `AG_MOCK_GENET_BASE_URL`）；`existing` → existing-deploy（已有服务登记，读 `service`
+        三元组原样导出，无 clean 阶段）。
       required: [provider]
       additionalProperties: true
       properties:
         provider:
           type: string
-          description: 部署提供方；恒 `genet`
+          description: 部署提供方：`genet`（真 Genet）| `mock`（fake-genet 联调）| `existing`（已有服务登记）；缺省 genet
           example: genet
         spec:
           type: string
-          description: Genet 部署描述原文（service-deploy 的输入文件内容，平台不解析语义）
+          description: Genet 部署描述原文（service-deploy 的输入文件内容，平台不解析语义）；genet / mock 形态用
           example: |
             model: Qwen3-32B
             replicas: 1
             resources: { gpu: 8 }
+        service:
+          $ref: '#/components/schemas/ServiceManifest'
 
     ServiceManifest:
       type: object
@@ -4698,6 +4708,12 @@ components:
         placeholder:
           type: string
           description: 与 `input_format` 同格式的合法片段（JSONL 片段 / YAML 片段），UI 输入框占位；平台不解析
+        clean_runner:
+          type: string
+          description: |
+            deploy 角色声明的配对 clean runner 名（runner.yaml `clean_runner`，D-70 声明式配对）；
+            未声明 / null = 无 clean 阶段（如 existing-deploy / mock-deploy）。平台不感知具体名字，
+            提交体不出现 clean —— assemble 期按本声明注入。
 
     Runner:
       description: |

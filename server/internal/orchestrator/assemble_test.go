@@ -272,6 +272,91 @@ func TestAssembleNoTestRunnersAllowed(t *testing.T) {
 	}
 }
 
+// D-78：task.name 与 runners[].name 均可选——缺省名由平台生成：
+// task.name 缺省取 Task ID；未命名 runner 的行名按注册表 Runner 名派生（重名追加序号）。
+func TestAssembleDefaultsGeneratedNames(t *testing.T) {
+	c := catalogWithBuiltin()
+	m := &Manifest{Task: TaskBody{
+		Service:  &ServiceManifest{URL: "http://10.0.0.10:8000/v1"},
+		Precheck: json.RawMessage(`"off"`),
+		Runners: []RunnerInput{
+			{Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+			{Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+			{Name: "acc", Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+		},
+	}}
+	p, err := testAssembler(c).Assemble(context.Background(), m, "t-20261110-JJJJ", "dev", nil)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if p.Task.Name != "t-20261110-JJJJ" {
+		t.Fatalf("task.name 缺省应为 Task ID: %q", p.Task.Name)
+	}
+	want := []string{"aisbench-acc", "aisbench-acc-2", "acc"}
+	for i, name := range want {
+		if p.Runners[i].Name != name {
+			t.Fatalf("runners[%d].name = %q, want %q", i, p.Runners[i].Name, name)
+		}
+	}
+	// 输入落档清单的行名与执行行一致。
+	if p.Inputs[0].Name != "aisbench-acc" {
+		t.Fatalf("input 行名应跟随执行行名: %+v", p.Inputs[0])
+	}
+}
+
+// D-78 对照样：派生名与显式名撞车时，派生方让位到下一个序号（显式名永远不被改写）。
+func TestAssembleDerivedNameYieldsToExplicitName(t *testing.T) {
+	c := catalogWithBuiltin()
+	m := &Manifest{Task: TaskBody{
+		Service:  &ServiceManifest{URL: "http://10.0.0.10:8000/v1"},
+		Precheck: json.RawMessage(`"off"`),
+		Runners: []RunnerInput{
+			{Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+			{Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+			{Name: "aisbench-acc-2", Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+		},
+	}}
+	p, err := testAssembler(c).Assemble(context.Background(), m, "t-20261110-KKKK", "dev", nil)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	want := []string{"aisbench-acc", "aisbench-acc-3", "aisbench-acc-2"}
+	for i, name := range want {
+		if p.Runners[i].Name != name {
+			t.Fatalf("runners[%d].name = %q, want %q（派生名不得占用显式名）", i, p.Runners[i].Name, name)
+		}
+	}
+}
+
+// D-78 对照样：显式名的唯一性 / 保留名约束不变；未命名 runner 不再报 REQUIRED。
+func TestAssembleUnnamedRunnersStillValidate(t *testing.T) {
+	c := catalogWithBuiltin()
+	m := &Manifest{Task: TaskBody{
+		Service: &ServiceManifest{URL: "http://10.0.0.10:8000/v1"},
+		Runners: []RunnerInput{
+			{Name: "acc", Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+			{Name: "acc", Runner: "aisbench-acc", Version: "1.0.0", Execution: ExecutionSpec{Profile: "k8s-npu"}},
+		},
+	}}
+	_, err := testAssembler(c).Assemble(context.Background(), m, "t-20261110-LLLL", "dev", nil)
+	var ve *domain.ValidationError
+	if !errAs(err, &ve) {
+		t.Fatalf("显式重名仍应拒绝: %v", err)
+	}
+	dup := false
+	for _, is := range ve.Issues {
+		if is.Code == domain.IssueCodeNameConflict && is.Path == "runners[1].name" {
+			dup = true
+		}
+		if is.Code == domain.IssueCodeRequired && strings.HasPrefix(is.Path, "runners[") && strings.HasSuffix(is.Path, ".name") {
+			t.Fatalf("name 不应再有 REQUIRED issue: %+v", is)
+		}
+	}
+	if !dup {
+		t.Fatalf("缺少 name 重复 issue: %+v", ve.Issues)
+	}
+}
+
 func TestAssembleValidationErrors(t *testing.T) {
 	cases := []struct {
 		name string

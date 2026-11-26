@@ -739,7 +739,8 @@ export interface ExecutionSpec {
  * **没有 args（argv 恒空，D-66）、没有 retry（D-69）、没有 cleanup.policy（D-70）**。
  */
 export interface RunnerSpec {
-  name: string
+  /** 可选（D-78）：缺省由平台按注册表 Runner 名派生执行行名（重名追加序号）。 */
+  name?: string
   runner: string
   version: string
   execution: ExecutionSpec
@@ -764,13 +765,14 @@ export interface PrecheckSpec {
  * **没有** `args`、`retry`、`cleanup.policy`（D-66/D-69/D-70）。
  */
 export interface TaskBody {
-  name: string
+  /** 可选（D-78）：缺省由平台取 Task ID 作为名称；≤200 字符（D-58）。 */
+  name?: string
   deploy?: DeployManifest
   service?: ServiceManifest
   precheck?: 'auto' | 'off' | PrecheckSpec
   env?: Record<string, string>
   secrets?: Record<string, string>
-  /** runner 列表（仅 test / 可选显式 pre_check）；1..200 条（D-57/§12.7） */
+  /** runner 列表（仅 test / 可选显式 pre_check）；0..200 条（D-77/§12.7） */
   runners?: RunnerSpec[]
 }
 

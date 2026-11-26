@@ -164,7 +164,9 @@ export function SubmitPage() {
       .getTaskManifest(retryId)
       .then((snap) => {
         const t = snap.manifest.task
-        setName(retryName(t.name))
+        // D-78：name 可选——原提交没写名字时留空，重试提交同样走平台默认名；
+        // 原提交写了名字则回填并追加 -retry 后缀（避免同名混淆，保住 200 rune 上限）。
+        setName(t.name ? retryName(t.name) : '')
         if (t.deploy) {
           setDeployInputs((prev) => ({ ...prev, [t.deploy!.runner]: t.deploy!.input ?? '' }))
           setDeployRunnerName(t.deploy!.runner)
@@ -181,14 +183,14 @@ export function SubmitPage() {
         setRunnerDrafts(
           (t.runners ?? []).map((r: RunnerSpec) => ({
             key: newKey(),
-            name: r.name,
+            name: r.name ?? '',
             runner: r.runner,
             input: r.input ?? '',
           })),
         )
         const prof = t.runners?.[0]?.execution?.profile
         if (prof) setProfile(prof)
-        setRetrySource({ id: snap.task_id, name: t.name })
+        setRetrySource({ id: snap.task_id, name: t.name ?? '' })
       })
       .catch((e: unknown) => {
         const err = toApiError(e)
@@ -455,7 +457,8 @@ export function SubmitPage() {
 
     return {
       task: {
-        name: name.trim(),
+        // D-78：Task 名称可选——留空时不带 name 字段，平台用 Task ID 作默认名
+        ...(name.trim() ? { name: name.trim() } : {}),
         // 服务来源的提交体映射（deploy XOR service 由 assemble 校验，§10.1）：
         //   选了 deploy runner → deploy:{runner, version, input}（runner 引用，与 runners[] 同构；
         //     clean 是否注入由该 runner 的 clean_runner 声明决定，提交体不出现 clean）；
@@ -477,7 +480,8 @@ export function SubmitPage() {
           const runnerName = draft.runner || defaultRunner
           const runner = runnerList.find((r) => r.name === runnerName)
           return {
-            name: draft.name.trim(),
+            // D-78：runner 名称可选——留空时不带 name 字段，平台按注册表 Runner 名派生行名
+            ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
             runner: runnerName,
             version: runner?.version ?? '',
             execution: { profile: profile.trim() || 'k8s-npu' },
@@ -525,8 +529,7 @@ export function SubmitPage() {
       // 外接模式：service 三元组（后端按同 path 回错）
       found.push({ path: 'task.service.url', code: 'REQUIRED', message: '服务 base URL 必填' })
     }
-    if (!name.trim()) found.push({ path: 'task.name', code: 'REQUIRED', message: 'name 必填' })
-    // D-58：上限 200 rune（不是字节、不是 UTF-16 单元）
+    // D-58：上限 200 rune（不是字节、不是 UTF-16 单元）；name 本身可选（D-78），留空走平台默认名
     if (runeLength(name.trim()) > NAME_MAX_RUNES) {
       found.push({
         path: 'task.name',
@@ -542,8 +545,6 @@ export function SubmitPage() {
       })
     }
     runnerDrafts.forEach((draft, index) => {
-      if (!draft.name.trim())
-        found.push({ path: `task.runners[${index}].name`, code: 'REQUIRED', message: 'runner 名称必填' })
       if (!draft.runner && !defaultRunner) {
         found.push({ path: `task.runners[${index}].runner`, code: 'REQUIRED', message: '必须选择 Runner' })
       }
@@ -682,8 +683,8 @@ export function SubmitPage() {
           */}
           <Field
             label="Task 名称"
-            required
             htmlFor="task-name"
+            hint="可选：留空时平台自动生成（默认使用 Task ID）"
             error={nameError}
           >
             <div id="task-name-row" className="flex items-center gap-2">
@@ -693,7 +694,7 @@ export function SubmitPage() {
                 value={name}
                 maxLength={NAME_MAX_RUNES}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="如 qwen3-32b-daily"
+                placeholder="如 qwen3-32b-daily（留空自动生成）"
                 aria-invalid={Boolean(nameError)}
                 className="flex-1"
               />
@@ -1079,7 +1080,7 @@ export function SubmitPage() {
                     aria-label={`runner ${index + 1} 名称`}
                     aria-invalid={Boolean(nameIssue)}
                     title={nameIssue ?? undefined}
-                    placeholder="如 accuracy-dataset-a"
+                    placeholder="如 accuracy-dataset-a（留空自动生成）"
                     className="h-8 w-56"
                     onChange={(e) => setRunnerDraft(draft.key, { name: e.target.value })}
                   />

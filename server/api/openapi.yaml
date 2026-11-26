@@ -3966,14 +3966,15 @@ components:
       description: |
         Manifest 的 `task:` 内容。`deploy` 与 `service` 二选一（D-27：两者都缺/都给 → 拒绝提交）。
         未知字段忽略（07 §1）。**没有** `args`、`retry`、`cleanup.policy`（D-66/D-69/D-70）。
-      required: [name]
       oneOf:
         - required: [deploy]
         - required: [service]
       properties:
         name:
           type: string
-          description: Task 名称，展示用；≤200 字符（D-58）
+          description: |-
+            Task 名称，展示用；≤200 字符（D-58）。**可选（D-78）**：缺省时平台以 Task ID
+            作为名称（202 应答与详情里的 `name` 即为生成值；`tasks.manifest` 保持提交原文）。
           example: qwen3-32b-daily
         deploy:
           $ref: '#/components/schemas/DeployManifest'
@@ -4015,12 +4016,15 @@ components:
         `runners[]` 一项：一个 runner 的提交意图（07 §4.1、ARCHITECTURE §10.1）。
         字段只有 name / runner / version / execution / input / on_failure / timeout_seconds；
         **没有 args（argv 恒空，D-66）、没有 retry（runner 级重试取消，D-69）、没有 cleanup.policy（D-70）**。
-      required: [name, runner, version, execution]
+      required: [runner, version, execution]
       additionalProperties: true
       properties:
         name:
           type: string
-          description: 必填；同 Task 内唯一（报告与 UI 展示用）
+          description: |-
+            可选（D-78）；同 Task 内唯一（报告与 UI 展示用）。缺省时平台按解析出的注册表
+            Runner 名派生执行行名（重名追加序号 `-2`、`-3`…，并避开 `precheck` 等注入行保留名）；
+            派生名只进执行行，`tasks.manifest` 保持提交原文。显式给名时的唯一性 / 保留名约束不变。
         runner:
           type: string
           description: Runner 名称；必须命中已注册白名单（否则 `RUNNER_NOT_FOUND`）；`deploy` / `clean` 角色不可引用（平台自动注入）

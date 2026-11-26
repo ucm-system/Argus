@@ -66,7 +66,7 @@ executor/ deploystate/ registry/ report/ events/ logcollect/  adapter，不写 t
 --（v2 无 deploying/testing/cleanup/completed_with_errors：RUNNING 的内部推进 = runner 管道，§7.4 / D-70）
 CREATE TABLE tasks (
   id               text PRIMARY KEY,                     -- t-YYYYMMDD-XXXX
-  name             text NOT NULL,
+  name             text NOT NULL,                        -- 可选提交（D-78）：缺省平台取 task_id
   status           text NOT NULL,
   manifest         jsonb NOT NULL,                       -- 原始提交（secrets 仅引用；顶层 task:）
   resolved         jsonb NOT NULL,                       -- 管道快照：注入的 deploy/precheck/clean、
@@ -105,7 +105,7 @@ CREATE TABLE task_runners (
   task_id            text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   attempt_no         int  NOT NULL,
   seq                int  NOT NULL,                      -- 从 1 递增（含注入的 deploy/precheck/clean）
-  name               text NOT NULL,                      -- Manifest runners[].name；注入行为 service-deploy / precheck / service-clean
+  name               text NOT NULL,                      -- 执行行名：Manifest runners[].name（可选，D-78——缺省按注册表 Runner 名派生）；注入行为 service-deploy / precheck / service-clean
   role               text NOT NULL CHECK (role IN ('test','pre_check','deploy','clean')),
   runner_name        text NOT NULL,                      -- 注册表 name（内置 runner 亦登记）
   runner_version     text NOT NULL,
@@ -620,7 +620,7 @@ seq=+1…   用户 runners[]（仅 test / 显式 pre_check）
 
 deploy / clean 不可被用户引用或手动添加：`runners[].runner` 命中 `role ∈ {deploy, clean}` → `RUNNER_NOT_FOUND`（§10.1）；两者由平台按 `deploy` 字段**自动配对注入**（提交了部署描述 → 前置 service-deploy、追加 service-clean；D-70）。
 
-命名冲突（已有 `runners[].name == "precheck"` / `"service-deploy"` / `"service-clean"`）→ `VALIDATION_ERROR`。
+命名冲突（已有 `runners[].name == "precheck"` / `"service-deploy"` / `"service-clean"`）→ `VALIDATION_ERROR`。未命名 runner（D-78）由平台按解析出的注册表 Runner 名派生执行行名（重名追加序号），派生集合避开上述保留名与用户显式名；`tasks.manifest` 保持提交原文不回填。
 
 ### C-5.3 部署模式推进：service-deploy runner 与 deploy-state.json（v2 重写，D-70）
 

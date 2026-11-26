@@ -30,7 +30,12 @@ import (
 //	 9. on_failure 不得弱化 Runner 声明；pre_check 必须 abort_task
 //	10. required 的 env 都有来源；secrets 引用存在
 //	11. precheck: auto 时注册表恰好一个 role=pre_check
-//	12. timeout_seconds ≤ 24h；task.name ≤ 200（D-58）
+//	12. timeout_seconds ≤ 24h；task.name ≤ 200（D-58，仅在用户给了名字时校验）
+//
+// 名称默认生成（D-78）：task.name 与 runners[].name 均为可选——task.name 缺省取 Task ID；
+// 未命名 runner 的执行行名按解析出的注册表 Runner 名派生（重名追加序号），并避开用户名与
+// 注入行保留名（precheck / deploy / clean runner 名）。派生名只进执行行（task_runners /
+// resolved 快照），tasks.manifest 保持提交原文不回填。
 //
 // 通过后生成 resolved 快照（管道序列：注入的 deploy / precheck / clean、冻结渲染输入、
 // 输入落档路径）与 task_runners 行。
@@ -51,6 +56,7 @@ type Manifest struct {
 
 // TaskBody 是 Manifest 的 task: 内容（deploy XOR service，D-27）。
 type TaskBody struct {
+	// Name 可选（D-78）：展示用，≤200 字符（D-58）；缺省由平台取 Task ID 作为名称。
 	Name     string            `json:"name"`
 	Deploy   *DeployManifest   `json:"deploy,omitempty"`
 	Service  *ServiceManifest  `json:"service,omitempty"`
@@ -78,6 +84,8 @@ type ServiceManifest struct {
 
 // RunnerInput 是 runners[] 一项（没有 args / retry / cleanup.policy，D-66/D-69/D-70）。
 type RunnerInput struct {
+	// Name 可选（D-78）：同 Task 内唯一（用户名冲突仍拒绝）；缺省按解析出的注册表
+	// Runner 名派生执行行名（defaultRunnerRowName）。
 	Name           string        `json:"name"`
 	Runner         string        `json:"runner"`
 	Version        string        `json:"version"`
@@ -210,6 +218,8 @@ type InputFile struct {
 type resolvedUser struct {
 	spec domain.RunnerSpec
 	in   *RunnerInput
+	// rowName 是执行行名：用户给了 name 用之，否则按 spec.Name 派生默认（D-78）。
+	rowName string
 }
 
 // Assemble 校验并组装线性管道。校验失败返回 *domain.ValidationError（API 层映射
@@ -222,9 +232,7 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 	ve := &domain.ValidationError{}
 
 	// ---- 2/3/4. 结构与形态校验（C-5.1）----
-	if strings.TrimSpace(m.Task.Name) == "" {
-		ve.Add("task.name", domain.IssueCodeRequired, "task.name 必填")
-	}
+	// task.name 可选（D-78）：缺省在 buildPipeline 用 Task ID 兜底；这里只在给了名字时校长度。
 	if len(m.Task.Name) > 200 {
 		ve.Add("task.name", domain.IssueCodeTooLong, "task.name 超过 200 字符")
 	}
@@ -236,10 +244,6 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 			fmt.Sprintf("runners 超过单 Task 上限 %d", a.MaxRunners),
 			map[string]any{"limit": a.MaxRunners, "actual": len(m.Task.Runners)})
 	}
-	if !ve.Empty() {
-		return nil, ve
-	}
-
 	if !ve.Empty() {
 		return nil, ve
 	}
@@ -283,17 +287,17 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 	usedNames := map[string]bool{}
 	for i := range m.Task.Runners {
 		r := &m.Task.Runners[i]
-		if r.Name == "" {
-			ve.Add(fmt.Sprintf("runners[%d].name", i), domain.IssueCodeRequired, "name 必填（Task 内唯一）")
-			continue
-		}
-		if usedNames[r.Name] {
-			ve.Add(fmt.Sprintf("runners[%d].name", i), domain.IssueCodeNameConflict, "name 与前面的 runner 重复")
-		}
-		usedNames[r.Name] = true
-		if reservedNames[r.Name] {
-			ve.Add(fmt.Sprintf("runners[%d].name", i), domain.IssueCodeNameConflict,
-				"name %q 是平台注入行保留名，不可占用", r.Name)
+		// name 可选（D-78）：未命名 runner 的行名在解析出注册表 Runner 名后派生；
+		// 用户显式给的名字仍受唯一性与保留名约束。
+		if r.Name != "" {
+			if usedNames[r.Name] {
+				ve.Add(fmt.Sprintf("runners[%d].name", i), domain.IssueCodeNameConflict, "name 与前面的 runner 重复")
+			}
+			usedNames[r.Name] = true
+			if reservedNames[r.Name] {
+				ve.Add(fmt.Sprintf("runners[%d].name", i), domain.IssueCodeNameConflict,
+					"name %q 是平台注入行保留名，不可占用", r.Name)
+			}
 		}
 		if r.Runner == "" || r.Version == "" {
 			ve.Add(fmt.Sprintf("runners[%d].runner", i), domain.IssueCodeRequired, "runner 与 version 必填")
@@ -304,6 +308,12 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 	}
 	if !ve.Empty() {
 		return nil, ve
+	}
+
+	// 默认行名派生的占用集合（D-78）= 用户显式名 + 注入行保留名：
+	// 派生只发生在这之后，天然不会与任何显式名 / 保留名 / 先派生的名字撞车。
+	for name := range reservedNames {
+		usedNames[name] = true
 	}
 
 	// ---- 3. 注入判定（C-5.2：deploy XOR service 决定 service-deploy / service-clean）----
@@ -319,7 +329,7 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 	users := make([]resolvedUser, 0, len(m.Task.Runners))
 	for i := range m.Task.Runners {
 		in := &m.Task.Runners[i]
-		if in.Runner == "" || in.Version == "" || in.Execution.Profile == "" || in.Name == "" {
+		if in.Runner == "" || in.Version == "" || in.Execution.Profile == "" {
 			continue // 已由上面的 issue 覆盖
 		}
 		spec, err := a.Catalog.Resolve(ctx, in.Runner, in.Version)
@@ -368,7 +378,14 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 			ve.Add(fmt.Sprintf("runners[%d].on_failure", i), domain.IssueCodeOnFailure,
 				"pre_check 角色必须 on_failure=abort_task（§7.3）")
 		}
-		users = append(users, resolvedUser{spec: spec, in: in})
+		// 行名（D-78）：未命名 runner 按注册表 Runner 名派生默认；派生名也进 usedNames，
+		// 后续同名引用会自动让位到下一个序号。
+		rowName := in.Name
+		if rowName == "" {
+			rowName = defaultRunnerRowName(spec.Name, usedNames)
+			usedNames[rowName] = true
+		}
+		users = append(users, resolvedUser{spec: spec, in: in, rowName: rowName})
 	}
 	if !ve.Empty() {
 		return nil, ve
@@ -491,6 +508,21 @@ func (a *Assembler) Assemble(ctx context.Context, m *Manifest, taskID, actor str
 	return a.buildPipeline(ctx, m, users, precheck, deploySpec, taskID, actor, now)
 }
 
+// defaultRunnerRowName 派生未命名 runner 的执行行名（D-78）：基名 = 解析出的注册表
+// Runner 名（namePattern 限 [a-z0-9-] ≤63，追加序号后仍远小于 D-58 的 200 rune，无需截断）；
+// 与用户名 / 注入行名 / 已派生名冲突时从 -2 起追加序号，直到唯一。
+func defaultRunnerRowName(base string, used map[string]bool) string {
+	if !used[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", base, n)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+}
+
 // indexRunners 找 in 在 runners[] 里的下标（issue 定位用）。
 func indexRunners(m *Manifest, in *RunnerInput) int {
 	for i := range m.Task.Runners {
@@ -578,9 +610,14 @@ func (a *Assembler) resolvePrecheck(ctx context.Context, raw json.RawMessage, ve
 func (a *Assembler) buildPipeline(ctx context.Context, m *Manifest, users []resolvedUser, precheck precheckDecision,
 	deploySpec *domain.RunnerSpec, taskID, actor string, now domain.Clock) (*Pipeline, error) {
 
+	// Task 名（D-78）：缺省用 Task ID 兜底；tasks.manifest 保持提交原文，不回填派生名。
+	taskName := strings.TrimSpace(m.Task.Name)
+	if taskName == "" {
+		taskName = taskID
+	}
 	t := &store.Task{
 		ID:          taskID,
-		Name:        m.Task.Name,
+		Name:        taskName,
 		SubmittedBy: actor,
 	}
 	t.SubmittedAt = now.Now()
@@ -718,8 +755,8 @@ func (a *Assembler) buildPipeline(ctx context.Context, m *Manifest, users []reso
 		if timeout <= 0 {
 			timeout = a.DefaultTimeoutSeconds
 		}
-		addRow(u.in.Name, u.spec, u.in.Execution.Profile, false, timeout, runnerOnFailure(u))
-		inputs = append(inputs, InputFile{Seq: len(rows), Name: u.in.Name,
+		addRow(u.rowName, u.spec, u.in.Execution.Profile, false, timeout, runnerOnFailure(u))
+		inputs = append(inputs, InputFile{Seq: len(rows), Name: u.rowName,
 			Format: firstNonEmpty(u.spec.InputFormat, domain.InputFormatJSONL), Content: u.in.Input})
 	}
 

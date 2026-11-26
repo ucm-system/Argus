@@ -52,7 +52,7 @@ erDiagram
 | 列 | 类型 | 空 | 写时机 | 语义 / 规则 |
 |---|---|---|---|---|
 | `id` | text | 否 | 创建 | `t-YYYYMMDD-XXXX`；对外唯一标识，不透明 |
-| `name` | text | 否 | 创建 | 展示用，Task 内不重复；≤200 字符（D-58）；不得用于定位 |
+| `name` | text | 否 | 创建 | 展示用，Task 内不重复；≤200 字符（D-58）；不得用于定位。用户未填时由平台写默认值（= `task_id`，D-78）；`manifest` 保持提交原文不回填 |
 | `status` | text | 否 | 状态机 | 只经 `Kernel.Apply`；8 值枚举（§3.2）；终态不可逆。**没有** `deploying` / `testing` / `cleanup` / `completed_with_errors`（v2 取消平台阶段，§7.4） |
 | `manifest` | jsonb | 否 | 创建 | 提交原文快照（嵌套 `task:`，§4.1）；之后**只读** |
 | `resolved` | jsonb | 否 | 创建 | 冻结解析结果（precheck、注入的 runner 序、输入快照摘要，§4.2）；之后只读 |
@@ -77,7 +77,7 @@ erDiagram
 | 列 | 类型 | 空 | 写时机 | 语义 / 规则 |
 |---|---|---|---|---|
 | `task_id` / `attempt_no` / `seq` | text / int / int | 否 | 创建（attempt 启动时按 resolved 全量生成） | 主键三元组；`seq` 从 1 递增（含注入的 service-deploy / precheck / service-clean） |
-| `name` | text | 否 | 创建 | Task 内唯一（用户 `runners[].name`；注入的为 `service-deploy` / `precheck` / `service-clean`；clean 重放追加的行为 `service-clean-replay`，§9.3）；报告/UI 展示用 |
+| `name` | text | 否 | 创建 | Task 内唯一（用户 `runners[].name`，未填时按注册表 Runner 名派生默认行名——重名追加序号、避开注入行保留名，D-78；注入的为 `service-deploy` / `precheck` / `service-clean`；clean 重放追加的行为 `service-clean-replay`，§9.3）；报告/UI 展示用 |
 | `runner_name` / `runner_version` | text | 否 | 创建 | **冻结快照**（`name@version`）；注册表变化不影响它（§5.7） |
 | `role` | text | 否 | 创建 | `test` / `pre_check` / `deploy` / `clean`（deploy/clean 仅内置） |
 | `image_ref` | text | 否 | 创建 | 冻结的镜像引用（原样来自 runner.yaml，平台不解析 tag/digest，§5.6） |
@@ -457,7 +457,7 @@ CREATE INDEX audit_object_idx ON audit_log (object_type, object_id);
 **Manifest 的唯一形态是嵌套 `task:`**（D-40 v2 表述，与 `07-api.md §4.1` 一致）；`tasks.manifest` 原样保存提交原文，平台不会"展开成平级"。
 
 `deploy` 与 `service` 互斥（都填或都不填拒绝提交，`VALIDATION_ERROR`）；`runners[]` 字段只有
-`name` / `runner` / `version` / `execution.profile` / `input`（输入原文，jsonl|yaml|text 按 Runner 的 `input_format`）/
+`name`（可选，D-78）/ `runner` / `version` / `execution.profile` / `input`（输入原文，jsonl|yaml|text 按 Runner 的 `input_format`）/
 `on_failure`（`continue|abort_task`）/ `timeout_seconds`——**没有** `args`、没有 `retry`、没有 `cleanup.policy`
 （D-66/D-69/D-70）。`secrets` 只存引用名；`input` 是字符串（该 runner 输入框的原文，多行 jsonl 也在这一个字段里）。
 结构以本文 §4.1 与 `07-api.md §4` 为准（本仓没有独立 `schemas/` 目录，机器契约只有 `server/api/openapi.yaml`）。

@@ -31,8 +31,7 @@ test('① 0 个测试 runner：允许提交（D-77，只验证服务能否启动
   const validate = page.getByTestId('validate-task')
   await expect(submit).toBeEnabled()
 
-  // 干跑前先给 Task 名称（frontendIssues 的 name 必填与 0-runner 无关）
-  await page.getByLabel('Task 名称').fill('deploy-only-check')
+  // D-78：Task / runner 名称均可选，这里全部留空直接干跑
   await page.getByTestId('remove-runner-1').click()
 
   // 中性说明（不再是置灰警告）：只跑 服务来源 + precheck/clean

@@ -39,6 +39,7 @@ import type {
   LogChunk,
   Meta,
   Page,
+  PrecheckSpec,
   ProfileWrite,
   QueueStatus,
   Report,
@@ -1452,8 +1453,9 @@ function nextTaskId(): string {
 }
 
 /**
- * Manifest 校验（C-5.1 的 mock 子集）：形态互斥（deploy XOR service，D-27）、name 必填（D-58）、
- * runner 数 1..200（D-57/§12.7）、Runner/Profile 命中（RUNNER_NOT_FOUND / EXECUTION_PROFILE_NOT_FOUND）。
+ * Manifest 校验（C-5.1 的 mock 子集）：形态互斥（deploy XOR service，D-27）、
+ * runner 数 0..200（D-77/§12.7）、Runner/Profile 命中（RUNNER_NOT_FOUND / EXECUTION_PROFILE_NOT_FOUND）。
+ * D-78：task.name 与 runners[].name 可选（缺省名由平台生成），mock 不再校验它们的存在性。
  */
 function validateManifest(manifest: TaskManifest): ValidationIssue[] {
   const issues: ValidationIssue[] = []
@@ -1462,7 +1464,6 @@ function validateManifest(manifest: TaskManifest): ValidationIssue[] {
     issues.push({ path: 'task', code: 'VALIDATION_ERROR', message: '缺少 task 段' })
     return issues
   }
-  if (!body.name?.trim()) issues.push({ path: 'task.name', code: 'VALIDATION_ERROR', message: 'Task 名称不能为空' })
   if (body.deploy && body.service) {
     issues.push({ path: 'task', code: 'VALIDATION_ERROR', message: 'deploy 与 service 二选一，不能都给' })
   }
@@ -1501,9 +1502,6 @@ function validateManifest(manifest: TaskManifest): ValidationIssue[] {
     issues.push({ path: 'task.runners', code: 'TASK_TOO_LARGE', message: '单个 Task 最多 200 个 runner（§12.7）' })
   }
   body.runners?.forEach((spec, index) => {
-    if (!spec.name?.trim()) {
-      issues.push({ path: `task.runners[${index}].name`, code: 'VALIDATION_ERROR', message: 'runner 名称必填' })
-    }
     if (!spec.runner) {
       issues.push({ path: `task.runners[${index}].runner`, code: 'VALIDATION_ERROR', message: '必须选择 Runner' })
       return
@@ -1529,6 +1527,19 @@ function validateManifest(manifest: TaskManifest): ValidationIssue[] {
   return issues
 }
 
+/**
+ * D-78：未命名 runner 的执行行名派生（与后端 orchestrator.defaultRunnerRowName 同规则）：
+ * 基名 = 注册表 Runner 名，被占用（显式名 / 注入行名 / 已派生名）时追加序号 `-2`、`-3`…。
+ * 调用方负责把返回值加回 used，保证后续派生不撞车。
+ */
+function defaultRunnerRowName(base: string, used: Set<string>): string {
+  if (!used.has(base)) return base
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}-${n}`
+    if (!used.has(candidate)) return candidate
+  }
+}
+
 /** 提交体 → 最终执行序（service-deploy? → precheck? → tests → service-clean?，D-70）。 */
 function resolveRunnerSeeds(manifest: TaskManifest): RunnerSeed[] {
   const body = manifest.task
@@ -1536,6 +1547,16 @@ function resolveRunnerSeeds(manifest: TaskManifest): RunnerSeed[] {
   const deployRunner = body.deploy?.runner
     ? state.runners.find((r) => r.name === body.deploy!.runner && !r.retired)
     : undefined
+  // D-78：先收集全部行名占用（注入行名 + 用户显式名），再给未命名 runner 派生默认行名，
+  // 派生名与显式名 / 注入行名 / 先派生的名字天然不撞车。
+  const usedNames = new Set<string>()
+  if (body.deploy) usedNames.add(body.deploy.runner)
+  const precheck: 'auto' | 'off' | PrecheckSpec = body.precheck ?? 'auto'
+  if (precheck !== 'off') usedNames.add(INJECTED.precheck)
+  if (body.deploy && deployRunner?.clean_runner) usedNames.add(deployRunner.clean_runner)
+  for (const spec of body.runners ?? []) {
+    if (spec.name?.trim()) usedNames.add(spec.name.trim())
+  }
   if (body.deploy) {
     // deploy 行 = 提交体引用的 runner 本尊；clean 行按该 runner 的 clean_runner 声明注入
     seeds.push({
@@ -1546,7 +1567,6 @@ function resolveRunnerSeeds(manifest: TaskManifest): RunnerSeed[] {
       input: body.deploy.input,
     })
   }
-  const precheck = body.precheck ?? 'auto'
   if (precheck !== 'off') {
     const runner = precheck === 'auto' ? (state.runners.find((r) => r.role === 'pre_check')?.name ?? 'endpoint-probe') : precheck.runner
     seeds.push({
@@ -1558,7 +1578,10 @@ function resolveRunnerSeeds(manifest: TaskManifest): RunnerSeed[] {
     })
   }
   for (const spec of body.runners ?? []) {
-    seeds.push({ name: spec.name, runner: spec.runner, status: 'pending', input: spec.input })
+    // D-78：name 可选——未命名 runner 按注册表 Runner 名派生行名（重名追加序号）
+    const rowName = spec.name?.trim() || defaultRunnerRowName(spec.runner, usedNames)
+    usedNames.add(rowName)
+    seeds.push({ name: rowName, runner: spec.runner, status: 'pending', input: spec.input })
   }
   if (body.deploy && deployRunner?.clean_runner) {
     seeds.push({ name: deployRunner.clean_runner, runner: deployRunner.clean_runner, role: 'clean', status: 'pending' })
@@ -2313,7 +2336,8 @@ export const mockApi: Api = {
 
     const detail: TaskDetail = {
       id: taskId,
-      name: body.name,
+      // D-78：name 可选——留空时用 Task ID 作默认名（与后端 buildPipeline 同规则）
+      name: body.name?.trim() || taskId,
       status: 'submitted',
       submitted_by: getCurrentUser(),
       submitted_at: nowIso(),

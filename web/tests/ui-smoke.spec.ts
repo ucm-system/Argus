@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test'
  * 最小 UI 冒烟（PR #18 / 验收 #16）：
  *   /tasks -> 点第一条 -> 详情页的执行视图里出现 runner 管道时间线
  *     （终态 Run 默认是「结果」视图，先切「执行细节」——折叠不是隐藏）
- *   /submit -> 故意把 Task 名称清空 -> dry-run 报错可见
+ *   /submit -> 故意清空 execution.profile -> dry-run 报错可见（D-78 后名称已可选，不再拿名称造错）
  */
 
 /**
@@ -37,10 +37,11 @@ test('runs list -> detail task table -> submit dry-run error', async ({ page }) 
   await expect(page.getByTestId('submit-task')).toBeVisible()
   await expect(page.getByTestId('validate-task')).toBeVisible()
 
-  // 清空 Task 1 名称，让 dry-run 返回校验错误（页面应显示“校验未通过” Banner）。
-  const taskName = page.getByLabel('runner 1 名称')
-  await expect(taskName).toBeVisible()
-  await taskName.fill('')
+  // 清空执行环境 profile，让 dry-run 返回校验错误（页面应显示“校验未通过” Banner）。
+  // D-78：Task / runner 名称已可选，不能再拿「名称留空」造前端必过、后端报错的场景。
+  const profileInput = page.getByLabel('执行环境 profile')
+  await expect(profileInput).toBeVisible()
+  await profileInput.fill('')
   await page.getByTestId('validate-task').click()
 
   // dry-run 的校验错误以 alert 呈现（ErrorState：VALIDATION_ERROR / 提交内容未通过校验）

@@ -183,11 +183,11 @@ task:
 
 **提交体字段**（嵌套 `task:`，D-40；ARCHITECTURE §10.1）：
 
-- `name`：Task 名称，展示用，≤200 字符（D-58）。
+- `name`：Task 名称，展示用，≤200 字符（D-58）；**可选（D-78）**，缺省由平台取 Task ID 作为名称（202 应答与详情里的 `name` 即为生成值，`tasks.manifest` 保持提交原文）。
 - `deploy` XOR `service`：互斥，都填或都不填 → 400 `VALIDATION_ERROR`（D-27）。`deploy` 内容是 Genet 部署描述（`provider` + `spec` YAML 原文，平台不解析语义），由内置 service-deploy runner 消费；`service` 直接给 `url` / `model_name` / `model_path`（外接模式，静态值视为"序号 0 的导出"注入全部 runner）。
 - `precheck`：`auto`（默认）/ `off` / 显式对象。`auto` 取注册表里唯一 `role: pre_check` 的 Runner 注入为第一个测试类 runner（0 个或多个都拒绝提交）。
 - `env` / `secrets`：Task 级；`secrets` 只填引用名。
-- `runners[]`：**至少 1 条、至多 200 条**（D-57、§12.7）；严格串行执行。字段只有 `name`（Task 内唯一）、`runner` + `version`（必须命中已注册白名单；`role: deploy/clean` 不可引用——它们由平台自动配对注入）、`execution.profile`、`input`（输入原文，格式按该 Runner 的 `input_format`）、`on_failure`（`continue|abort_task`，不能弱化 Runner 声明）、`timeout_seconds`。**没有** `args`、**没有** `retry`、**没有** `cleanup.policy`（D-66/D-69/D-70）。
+- `runners[]`：**至多 200 条**（D-77、§12.7）；严格串行执行。字段只有 `name`（可选，Task 内唯一）、`runner` + `version`（必填，必须命中已注册白名单；`role: deploy/clean` 不可引用——它们由平台自动配对注入）、`execution.profile`、`input`（输入原文，格式按该 Runner 的 `input_format`）、`on_failure`（`continue|abort_task`，不能弱化 Runner 声明）、`timeout_seconds`。**没有** `args`、**没有** `retry`、**没有** `cleanup.policy`（D-66/D-69/D-70）。`name` 缺省（D-78）由平台按解析出的注册表 Runner 名派生执行行名（重名追加 `-2`、`-3`…序号，避开用户显式名与 `precheck` 等注入行保留名）；显式给名时的唯一性 / 保留名约束不变。
 
 **平台校验**（全部 400 `VALIDATION_ERROR`，错误带行号 + 字段名）：
 

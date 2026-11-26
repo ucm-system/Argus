@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test'
 /**
  * 用户这一轮提的 7 条 UI 问题的回归用例（`web/` 侧）：
  *
- *  2. 提交页不预填默认值，只留 placeholder；空表单被**前端**拦下；
+ *  2. 提交页不预填默认值，只留 placeholder；名称可选（D-78），留空也能提交；
  *  3. 右栏只显示当前选中的那个 Tester，参数可一键追加进 args；
  *  4. Task 行的 Tester 详情抽屉（与 `/testers?open=` 同一个组件）；
  *  5. Deploy YAML 实时校验：结构（provider + parameters）与语法都标在编辑器里；
@@ -34,16 +34,16 @@ async function replaceYaml(page: Page, text: string): Promise<void> {
 
 /* ============================================================ 2. 默认值为空 */
 
-test('② 提交页默认值全空：Run 名 / Task 名 / 参数 / env / secret 都只留 placeholder', async ({ page }) => {
+test('② 提交页默认值全空：Task 名 / runner 名 / 参数 / env / secret 都只留 placeholder', async ({ page }) => {
   await openSubmit(page)
 
-  const runName = page.getByLabel('Task 名称')
-  await expect(runName).toHaveValue('')
-  await expect(runName).toHaveAttribute('placeholder', '如 qwen3-32b-daily')
-
-  const taskName = page.getByLabel('runner 1 名称')
+  const taskName = page.getByLabel('Task 名称')
   await expect(taskName).toHaveValue('')
-  await expect(taskName).toHaveAttribute('placeholder', '如 accuracy-dataset-a')
+  await expect(taskName).toHaveAttribute('placeholder', '如 qwen3-32b-daily（留空自动生成）')
+
+  const runnerName = page.getByLabel('runner 1 名称')
+  await expect(runnerName).toHaveValue('')
+  await expect(runnerName).toHaveAttribute('placeholder', '如 accuracy-dataset-a（留空自动生成）')
 
   // 参数不再预填 `--dataset=/data/gsm8k.jsonl --limit=200`：值是空的，示例只在灰字里
   const args = page.getByLabel('runner 1 输入')
@@ -56,7 +56,7 @@ test('② 提交页默认值全空：Run 名 / Task 名 / 参数 / env / secret 
   await expect(page.getByTestId('env-empty-hint')).toBeVisible()
 
   // placeholder 是灰字（用 fg-3 令牌，与正文颜色不同）
-  const colors = await runName.evaluate((el) => {
+  const colors = await taskName.evaluate((el) => {
     const probe = document.createElement('span')
     probe.style.color = 'var(--color-fg-3)'
     document.body.appendChild(probe)
@@ -68,25 +68,15 @@ test('② 提交页默认值全空：Run 名 / Task 名 / 参数 / env / secret 
   expect(colors.placeholder).not.toBe(colors.value)
 })
 
-test('② 空表单点提交：前端拦下并给字段级错误，不发请求也不跳走', async ({ page }) => {
+test('② 名称留空也能提交：Task / runner 名称可选（D-78），直接受理并跳详情', async ({ page }) => {
   await openSubmit(page)
 
+  // Task 名称与 runner 1 名称都留空 → 前端不再有 name 必填拦截
   await page.getByTestId('submit-task').click()
 
-  const summary = page.getByTestId('form-error-summary')
-  await expect(summary).toBeVisible({ timeout: 10_000 })
-  await expect(summary).toContainText('task.name')
-  await expect(summary).toContainText('name 必填')
-  await expect(summary).toContainText('task.runners[0].name')
-  await expect(summary).toContainText('runner 名称必填')
-
-  // 字段级：输入框 aria-invalid + 一行红字（不是只有顶部摘要）
-  await expect(page.getByLabel('Task 名称')).toHaveAttribute('aria-invalid', 'true')
-  await expect(page.getByLabel('runner 1 名称')).toHaveAttribute('aria-invalid', 'true')
-  await expect(page.getByTestId('runner-name-error-1')).toBeVisible()
-
-  // 停在本页：没有创建任何 Run
-  await expect(page).toHaveURL(/\/submit$/)
+  // 前端校验通过 → dry-run 通过 → 受理并跳详情（服务来源默认 genet-deploy，部署输入可空）
+  await expect(page).toHaveURL(/\/tasks\/[^/]+$/, { timeout: 20_000 })
+  await expect(page.getByTestId('form-error-summary')).toHaveCount(0)
 })
 
 /* ============================================================ 3. 每个 runner 行有可见示例（可查看 / 复制 / 填入） */

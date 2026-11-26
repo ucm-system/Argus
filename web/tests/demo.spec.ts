@@ -58,7 +58,7 @@ test.fixme('演示：提交服务形态 Task → 详情 → 报告 → 集群 �
   await page.goto('/submit')
   const runName = `demo-service-${Date.now().toString().slice(-5)}`
   await page.getByLabel('Task 名称').fill(runName)
-  // 默认值已清空（只留 placeholder）：Task 名称要自己写，否则前端校验会拦住提交
+  // 名称可选（D-78）：这里显式给名是为了后面能按名字在列表里定位这条 Task
   await page.getByLabel('runner 1 名称').fill('accuracy-dataset-a')
   await page.getByLabel('runner 1 输入').fill('--dataset=/data/gsm8k.jsonl --limit=200')
   // Segmented 是 role=group 里的 button（aria-pressed），不是原生 radio

@@ -72,6 +72,7 @@ Argus 是**对内工具**，以下事项已由团队裁决，本文按结论描�
 | **2.0.1** | 2026-11-11 | **UX 收口与 mock 解耦（D-75/D-76）**：① mock-deploy 独立化——探测内置 mock-llm（chart 组件）导出四件套，不再复用 genet-deploy/fake-genet；② `runners.clean_runner` 落库并经 `GET /runners` 回显；③ 详情页「报告」页签取消，终态默认「结果」视图（结论 / runner 明细 / result.json·html·csv 三选一内联渲染 / 产物下载），事件并入「执行细节」；④ UI 重试 = 带参重新提交（`/submit?retry=`），attempt 重放保留在 API；⑤ 提交页服务来源并入 runner 管道卡（第 0 步），provider 卡片化，每行示例可查看/复制/填入；⑥ 管理台 NFS 说明收为按钮+弹窗 |
 | **2.0.2** | 2026-11-11 | **提交页三选一下拉与退役清理**：① 服务来源改为与 runner 行同形态的下拉——Genet（默认）/ Mock / 已有服务（外接三元组），provider 卡片取消（用户裁决：一张卡片一个 deploy runner 太怪）；② `existing-deploy`（与外接语义重复）与改名期并存别名 `service-deploy`/`service-clean` 从目录退役——「已有服务」统一走 service 块，历史 Task 仍按 name@version 解析；③ 整页文件查看器吃满视口高度（预览区 stretch）；④ 结果视图删「runner 明细」卡（与结论重复）；三选一渲染优先度改 **html > csv > json**（用户裁决：完整报告最直观） |
 | **2.0.3** | 2026-11-13 | **D-77：runners 可为 0**——「只验证服务能否启动」（deploy + precheck 探活 + clean）不再要求至少 1 个测试 runner；`deploy` XOR `service` 仍必填其一，上限 200 不变。提交页删除「至少需要 1 个 runner」置灰，空列表给中性说明。另：界面去噪音两轮（规格引用灰字清除、按钮变体约束）、重试回填尾随换行误报修复、编辑器随内容自动长高 |
+| **2.0.5** | 2026-11-26 | **D-78：提交名称可选**——`task.name` 与 `runners[].name` 均改为可选：Task 名缺省取 Task ID；未命名 runner 的执行行名按解析出的注册表 Runner 名派生（重名追加 `-2`、`-3`…序号，避开用户显式名与 `precheck` 等注入行保留名）。派生名只进执行行（`task_runners` / `tasks.resolved`），`tasks.manifest` 保持提交原文。提交页两个名称输入框去必填（placeholder 提示"留空自动生成"），显式给名时的唯一性 / 保留名 / ≤200 字符（D-58）约束不变 |
 
 ---
 
@@ -997,14 +998,14 @@ Manifest 只描述评测意图、输入和执行环境。**不允许在 Manifest
 
 | 字段 | 说明 |
 |---|---|
-| `task.name` | Task 名称，用于展示，不参与复用判定；上限 200 字符（D-58） |
+| `task.name` | 可选（D-78）：Task 名称，用于展示，不参与复用判定；上限 200 字符（D-58）；缺省由平台取 Task ID 作为名称（`tasks.manifest` 保持提交原文） |
 | `deploy` | 与 `service` 二选一；**runner 引用**（`runner`/`version`/`input`，与 `runners[]` 同构）：role=deploy 的内置 Runner 任选（genet-deploy / mock-deploy…，平台不感知具体名字）；`input` 为该 Runner 的输入原文（YAML / JSONL 按 `input_format`，平台不解析）；clean 是否注入由该 Runner 的 `clean_runner` 声明决定（D-70/D-75）。UI 的「已有服务」走 `service` 三元组（2.0.2 起 existing-deploy 退役） |
 | `service` | 与 `deploy` 二选一；外接模式直接给出 `url` / `model_name` / `model_path`，平台作为静态导出注入全部 runner |
 | `precheck` | `auto`（默认）/ `off` / 显式对象。`auto`：平台取注册表里**唯一**一个 `role: pre_check` 的 Runner（0 个或多个都拒绝提交），插入测试类 runner 最前面；execution profile 复用首个 test runner 的 profile |
 | `env` | Task 级环境变量，明文，注入该 Task 全部 runner（§12.4） |
 | `secrets` | Task 级敏感值，**只填 Secret 引用**，由平台取值注入，不回显（§12.4） |
 | `runners[]` | runner 列表（仅 test / 可选显式 pre_check）；严格串行执行 |
-| `runners[].name` | 必填；同一 Task 内唯一，用于报告、日志定位与 UI 展示 |
+| `runners[].name` | 可选（D-78）；缺省按解析出的注册表 Runner 名派生执行行名（重名追加序号，避开用户显式名与注入行保留名）；显式给名时同一 Task 内唯一，用于报告、日志定位与 UI 展示 |
 | `runners[].runner` / `version` | 必填；必须命中已注册的白名单组合（`role: deploy/clean` 不可引用——它们由平台自动注入） |
 | `runners[].input` | **输入原文**（该 runner 输入框的内容，JSONL / YAML 按 `input_format`）。平台校验后落盘为输入文件；平台运行时 argv 为空 |
 | `runners[].execution.profile` | 必填；引用已登记的 Execution Profile |
@@ -1724,4 +1725,5 @@ placeholder: |
 | **D-75** | **mock 提供方与 Genet 完全解耦**：mock-deploy 从「genet-deploy 薄壳（env default 指向 fake-genet）」改为独立内置 deploy runner——不做任何部署动作，只探测一个已存在的 OpenAI 兼容 mock 服务（联调环境为 chart 内置 `mock-llm` 组件，`mockLlm.enabled`，tools/mock-llm）并导出四件套；`base_url` 参数可指向任何 OpenAI 兼容端点；超窗收口 `DEPLOY_BLOCKED(reason=timeout)`；不声明 `clean_runner`（常驻共享服务，无可拆除物，与 existing-deploy 同理）。mock-llm 属联调环境组件，生产关闭 | §9.1、§10.1 |
 | **D-76** | **UI 重试 = 带参重新提交**：详情页「重试」跳转 `/submit?retry=<task_id>`，用 `GET /tasks/{id}/manifest` 的提交原文回填表单（可修改），提交生成**新 Task（新 ID）**，原 Task 保留不动；attempt 级重放（§7.8）仍保留在 API/CLI（`POST /tasks/{id}/retry`），UI 不再暴露。配套：详情页取消「报告」页签（report.json 只是产物之一，D-74），终态默认「结果」视图（结论 + runner 明细 + 三选一内联渲染 + 产物下载），「事件」并入「执行细节」；`runners.clean_runner` 落库并在 `GET /runners` 回显 | views/07、openapi.yaml |
 | **D-77** | **runners 可为 0**：「测试服务能否启动」（deploy 拉起 + precheck 探活 + 按声明 clean，无任何测试 runner）是常用操作，`runners[]` 下限从 1（D-57）改为 0；`deploy` XOR `service` 必填其一不变（管道永远非空），`maxItems: 200` 不变。提交页允许空 runner 列表直接提交 | openapi.yaml、impl/control-plane.md 提交校验表 |
+| **D-78** | **提交名称可选，缺省自动生成**：`task.name` 与 `runners[].name` 从必填改为可选——Task 名缺省取 Task ID；未命名 runner 的执行行名按解析出的注册表 Runner 名派生（`aisbench-acc`、`aisbench-acc-2`…重名追加序号），派生集合避开用户显式名与注入行保留名（`precheck` / deploy / clean runner 名），显式名永远不被改写。派生名只进执行行（`task_runners` / `tasks.resolved`），`tasks.manifest` 保持提交原文不回填；显式给名时的唯一性、保留名、D-58 上限约束不变。提交页两个名称输入框去必填并提示"留空自动生成" | §10.1、views/07、views/03、openapi.yaml |
 

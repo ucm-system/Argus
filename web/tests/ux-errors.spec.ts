@@ -14,9 +14,10 @@ test('① 非法提交：摘要滚进视口 + issues 逐条 + trace_id 可复制
   await page.addInitScript(() => window.localStorage.setItem('argus:mock-role', 'operator'))
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/submit')
+  await expect(page.getByTestId('deploy-runner')).toBeVisible({ timeout: 15_000 })
 
-  // 造一个后端会 400 的提交：Run 名清空
-  await page.getByLabel('Task 名称').fill('')
+  // 造一个前端会拦下的提交（D-78 后 name 不再必填）：切外接模式，服务 URL 留空
+  await page.getByTestId('deploy-runner').selectOption({ label: '已有服务（不部署，直接填地址）' })
   await page.getByRole('button', { name: '提交', exact: true }).click()
 
   const summary = page.getByTestId('form-error-summary')
@@ -34,15 +35,15 @@ test('① 非法提交：摘要滚进视口 + issues 逐条 + trace_id 可复制
   expect(inViewport, '错误摘要必须自动滚进视口').toBe(true)
 
   // 3) 内容：前端校验也走同一套（path → message 逐条列出）
-  await expect(summary).toContainText('task.name')
-  await expect(summary).toContainText('name 必填')
+  await expect(summary).toContainText('task.service.url')
+  await expect(summary).toContainText('服务 base URL 必填')
 
   // 5) 字段级：输入框 aria-invalid + 边框色真的变了
   //    不按 R/G/B 通道算（不同平台/主题的色值不同，CI 上跑过假红）：
   //    只断言"错误态边框 ≠ 正常态边框"，并且错误态是 danger token 的颜色。
-  const nameInput = page.getByLabel('Task 名称')
-  await expect(nameInput).toHaveAttribute('aria-invalid', 'true')
-  const { normal, invalid } = await nameInput.evaluate((el) => {
+  const urlInput = page.locator('input[aria-invalid="true"]').first()
+  await expect(urlInput).toHaveAttribute('aria-invalid', 'true')
+  const { normal, invalid } = await urlInput.evaluate((el) => {
     const invalidColor = getComputedStyle(el).borderColor
     const probe = el.cloneNode(true) as HTMLElement
     probe.removeAttribute('aria-invalid')
@@ -55,23 +56,22 @@ test('① 非法提交：摘要滚进视口 + issues 逐条 + trace_id 可复制
   expect(invalid, '错误态边框必须与正常态不同').not.toBe(normal)
 
   // 6) 摘要里的「定位」能把焦点送回字段
-  //    v2：页面按「外接」形态起手（runner 目录异步到达），先点提交的话摘要第一行可能是
-  //    task.service.url —— 所以按 issue 行选「定位」，而不是拿页面里第一个按钮
-  await summary.locator('li', { hasText: 'task.name' }).getByTestId('jump-to-field').click()
-  await expect(nameInput).toBeFocused()
+  //    服务 base URL 的输入框没有独立的 label 关联，用「错误态输入框拿到焦点」验证定位成功
+  await summary.locator('li', { hasText: 'task.service.url' }).getByTestId('jump-to-field').click()
+  await expect(urlInput).toBeFocused()
 })
 
 test('① 校验（dry_run）用同一套呈现：问题清单可见，不再是 toast 一晃', async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem('argus:mock-role', 'operator'))
   await page.goto('/submit')
 
-  // 清空 Task 名称 → dry-run 返回 issues
-  await page.getByLabel('runner 1 名称').fill('')
+  // D-78：name 不再必填；清空 execution.profile → 前端 issue（服务端同 path 回错）
+  await page.getByLabel('执行环境 profile').fill('')
   await page.getByTestId('validate-task').click()
 
   const summary = page.getByTestId('form-error-summary')
   await expect(summary).toBeVisible({ timeout: 15_000 })
-  await expect(summary).toContainText('task.runners[0].name')
+  await expect(summary).toContainText('task.runners[0].execution.profile')
   // 常驻：等 3s 仍然在（不是 toast）
   await page.waitForTimeout(3000)
   await expect(summary).toBeVisible()
