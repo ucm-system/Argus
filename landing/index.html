@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Argus — 云原生模型评测流水线平台</title>
+<meta name="description" content="Argus 是云原生、轻量化、AI Agent 友好的模型评测流水线平台：Runner 编排器，按序拉起 runner Job、收割导出、注入下游、收集产物、记录事实。" />
+<link rel="icon" type="image/png" href="assets/argus-favicon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --night-deep: #060a13;
+    --night: #0b1322;
+    --night-steel: #16233a;
+    --moon-steel: #33517a;
+    --moonlight: #7c9cc4;
+    --champagne: #e4b863;
+    --text: #eef3fb;
+
+    --glass-bg: rgba(255, 255, 255, 0.08);
+    --glass-bg-hover: rgba(255, 255, 255, 0.14);
+    --glass-bg-soft: rgba(255, 255, 255, 0.05);
+    --glass-border: rgba(255, 255, 255, 0.15);
+    --glass-border-hover: rgba(255, 255, 255, 0.3);
+    --glass-shadow: 0 16px 40px rgba(3, 7, 18, 0.5),
+      inset 0 1px 0 rgba(255, 255, 255, 0.22),
+      inset 0 -1px 0 rgba(2, 6, 16, 0.35);
+    --glass-shadow-hover: 0 24px 64px rgba(3, 7, 18, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.32),
+      inset 0 -1px 0 rgba(2, 6, 16, 0.35);
+    --spring: cubic-bezier(0.16, 1, 0.3, 1);
+
+    --font: "Inter", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --max: 1200px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--font);
+    color: var(--text);
+    background:
+      radial-gradient(900px circle at 82% -4%, rgba(124, 156, 196, 0.2), transparent 60%),
+      radial-gradient(760px circle at -8% 32%, rgba(51, 81, 122, 0.32), transparent 62%),
+      radial-gradient(560px circle at 88% 58%, rgba(228, 184, 99, 0.07), transparent 55%),
+      radial-gradient(720px circle at 12% 96%, rgba(51, 81, 122, 0.26), transparent 60%),
+      linear-gradient(165deg, var(--night-deep) 0%, var(--night) 55%, #0d1830 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  /* film grain */
+  body::after {
+    content: "";
+    position: fixed; inset: 0; z-index: 60;
+    opacity: 0.028; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  ::selection { background: rgba(228, 184, 99, 0.28); color: #fff; }
+
+  a { color: var(--moonlight); text-decoration: none; }
+  a:hover { color: #fff; }
+
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 32px; }
+
+  /* ---------- nav ---------- */
+  .nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    height: 72px;
+    display: flex; align-items: center;
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    transition: background 0.5s var(--spring);
+  }
+  .nav.scrolled { background: rgba(11, 19, 34, 0.72); }
+  .nav .wrap { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+  .wordmark { display: flex; align-items: center; gap: 12px; font-size: 16px; font-weight: 600; color: #fff; letter-spacing: 0.01em; }
+  .wordmark img { width: 34px; height: 34px; }
+  .nav-links { display: flex; gap: 30px; font-size: 14px; }
+  .nav-links a { color: var(--moonlight); transition: color 0.3s; }
+  .nav-links a:hover { color: #fff; }
+  @media (max-width: 780px) { .nav-links { display: none; } }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font); font-size: 15px; font-weight: 500;
+    border-radius: 999px; cursor: pointer; border: 0;
+    transition: all 0.5s var(--spring);
+  }
+  .btn-primary {
+    background: var(--champagne); color: #0b1322;
+    padding: 14px 30px;
+    box-shadow: 0 8px 28px rgba(228, 184, 99, 0.18);
+  }
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    background: #f0c876;
+    box-shadow: 0 12px 32px rgba(228, 184, 99, 0.32);
+    color: #060a13;
+  }
+  .btn-ghost {
+    background: var(--glass-bg); color: var(--text);
+    padding: 13px 26px;
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  }
+  .btn-ghost:hover { background: var(--glass-bg-hover); border-color: var(--glass-border-hover); color: #fff; transform: translateY(-1px); }
+  .btn-nav { padding: 9px 20px; font-size: 14px; }
+
+  /* ---------- glass ---------- */
+  .glass {
+    position: relative;
+    background: var(--glass-bg);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    border-radius: 24px;
+    box-shadow: var(--glass-shadow);
+    transition: all 0.5s var(--spring);
+  }
+  .glass::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.1), transparent 45%);
+  }
+  .glass:hover {
+    background: var(--glass-bg-hover);
+    border-color: var(--glass-border-hover);
+    box-shadow: var(--glass-shadow-hover);
+    transform: translateY(-2px);
+  }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 176px 0 96px; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center; }
+  @media (max-width: 920px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--moonlight);
+    padding: 7px 16px; border-radius: 999px;
+    background: var(--glass-bg-soft);
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--champagne); box-shadow: 0 0 10px var(--champagne); }
+
+  h1 {
+    font-size: clamp(40px, 5.4vw, 62px);
+    font-weight: 600; line-height: 1.08; letter-spacing: -0.02em;
+    color: #fff; margin: 26px 0 20px;
+  }
+  h1 .accent { color: var(--champagne); }
+  .hero-sub { font-size: 16px; color: var(--moonlight); max-width: 520px; }
+  .hero-cta { display: flex; gap: 14px; margin-top: 36px; flex-wrap: wrap; }
+
+  .hero-card { padding: 0; overflow: hidden; border-radius: 28px; }
+  .hero-card img { display: block; width: 100%; }
+  .hero-robot { display: flex; justify-content: center; padding: 30px 30px 6px; }
+  .hero-robot img { width: min(64%, 300px); filter: drop-shadow(0 18px 40px rgba(3,7,18,0.55)); }
+  .hero-card-body { padding: 8px 30px 30px; }
+
+  .term {
+    margin-top: 18px;
+    background: rgba(3, 7, 18, 0.55);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px;
+    padding: 18px 20px;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 13px; line-height: 1.75; color: #c8d6ec;
+    overflow-x: auto; white-space: pre;
+  }
+  .term .c { color: #5d7699; }
+  .term .g { color: #8fd3a8; }
+  .term .y { color: var(--champagne); }
+  .term .b { color: #9db9de; }
+  .term::before {
+    content: "● ● ●"; color: rgba(255,255,255,0.22); font-size: 10px; letter-spacing: 5px;
+    display: block; margin-bottom: 12px;
+  }
+
+  /* ---------- sections ---------- */
+  section { padding: 96px 0; }
+  .sec-head { max-width: 640px; margin-bottom: 52px; }
+  .sec-label { font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--moonlight); margin-bottom: 16px; }
+  h2 { font-size: clamp(28px, 3.4vw, 40px); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; color: #fff; }
+  .sec-sub { font-size: 16px; color: var(--moonlight); margin-top: 16px; }
+
+  /* stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 920px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat { padding: 24px; border-radius: 16px; }
+  .stat .num { font-size: 38px; font-weight: 600; color: #fff; line-height: 1.1; }
+  .stat .lbl { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--moonlight); margin-top: 10px; }
+
+  /* pipeline */
+  .pipe { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
+  .pipe .stage {
+    flex: 1; min-width: 150px; padding: 22px 18px; border-radius: 18px;
+    background: var(--glass-bg-soft);
+    border: 1px solid rgba(255,255,255,0.1);
+    text-align: center;
+    transition: all 0.5s var(--spring);
+  }
+  .pipe .stage:hover { background: var(--glass-bg); border-color: var(--glass-border); transform: translateY(-2px); }
+  .pipe .stage .t { font-size: 15px; font-weight: 600; color: #fff; }
+  .pipe .stage .d { font-size: 12.5px; color: var(--moonlight); margin-top: 6px; }
+  .pipe .arrow { align-self: center; color: var(--moon-steel); font-size: 18px; }
+  @media (max-width: 780px) { .pipe .arrow { display: none; } }
+
+  /* feature cards */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  @media (max-width: 920px) { .cards { grid-template-columns: 1fr; } }
+  .card { padding: 30px; }
+  .card .icon {
+    width: 44px; height: 44px; border-radius: 13px;
+    display: grid; place-items: center; margin-bottom: 20px;
+    background: rgba(124, 156, 196, 0.14);
+    border: 1px solid rgba(124, 156, 196, 0.25);
+    color: var(--moonlight); font-size: 20px;
+  }
+  .card h3 { font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 10px; }
+  .card p { font-size: 14px; color: var(--moonlight); }
+
+  /* modes */
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 820px) { .modes { grid-template-columns: 1fr; } }
+  .mode { padding: 32px; }
+  .mode .tag { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--champagne); margin-bottom: 14px; font-weight: 500; }
+  .mode h3 { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 10px; }
+  .mode p { font-size: 14px; color: var(--moonlight); }
+  .mode ul { list-style: none; margin-top: 18px; }
+  .mode li { font-size: 14px; color: #c8d6ec; padding: 7px 0 7px 26px; position: relative; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .mode li:last-child { border-bottom: 0; }
+  .mode li::before { content: "→"; position: absolute; left: 2px; color: var(--moon-steel); }
+
+  /* runners strip */
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip {
+    font-size: 13px; color: #c8d6ec;
+    padding: 9px 18px; border-radius: 999px;
+    background: var(--glass-bg-soft);
+    border: 1px solid rgba(255,255,255,0.12);
+    transition: all 0.4s var(--spring);
+  }
+  .chip:hover { background: var(--glass-bg); border-color: var(--glass-border-hover); color: #fff; }
+  .chip b { color: #fff; font-weight: 600; }
+  .chip .role { color: var(--champagne); font-size: 11.5px; margin-left: 6px; }
+
+  /* cta band */
+  .cta-band { padding: 64px; text-align: center; border-radius: 32px; }
+  .cta-band h2 { margin-bottom: 14px; }
+  .cta-band p { color: var(--moonlight); max-width: 480px; margin: 0 auto 34px; font-size: 15px; }
+  @media (max-width: 640px) { .cta-band { padding: 44px 26px; } }
+
+  /* footer */
+  footer {
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 40px 0 48px; margin-top: 40px;
+  }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 18px; }
+  footer .f-links { display: flex; gap: 26px; font-size: 14px; }
+  footer .note { font-size: 13px; color: var(--moon-steel); }
+
+  /* reveal */
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.8s var(--spring), transform 0.8s var(--spring); }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+    * { transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="wrap">
+    <a class="wordmark" href="#top">
+      <img src="assets/argus-icon.webp" alt="Argus" />
+      Argus
+    </a>
+    <div class="nav-links">
+      <a href="#pipeline">管道</a>
+      <a href="#features">特性</a>
+      <a href="#modes">运行模式</a>
+      <a href="#runners">Runners</a>
+    </div>
+    <a class="btn btn-primary btn-nav" href="https://github.com/ucm-system/Argus">GitHub →</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <span class="eyebrow"><span class="dot"></span>云原生 · 模型评测流水线</span>
+        <h1>让每一次模型评测，<br />都<span class="accent">可复现、可编排</span>。</h1>
+        <p class="hero-sub">
+          Argus 是 AI Agent 友好的模型评测流水线平台。作为 Runner 编排器，
+          它按序拉起 runner Job、收割导出、注入下游、收集产物、记录事实——
+          把评测从脚本堆砌变成一条声明式流水线。
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="https://github.com/ucm-system/Argus">开始使用 →</a>
+          <a class="btn btn-ghost" href="#pipeline">了解架构</a>
+        </div>
+      </div>
+      <div class="glass hero-card">
+        <div class="hero-robot"><img src="assets/argus-assistant.webp" alt="Argus 机器人" /></div>
+        <div class="hero-card-body">
+          <div class="term"><span class="c"># 提交一个评测 Task</span>
+<span class="b">POST</span> /api/v1/tasks
+<span class="y">task:</span>
+  <span class="y">service:</span> { url: http://llm:8000/v1, model: qwen }
+  <span class="y">runners:</span>
+    - { name: endpoint-probe, input: … }
+    - { name: aisbench-sla,  input: … }
+
+<span class="g">→ 201 Created</span>  task_id: <span class="y">t_01J…</span>
+<span class="c"># deploy → pre_check → test → clean 严格串行</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="stats">
+      <div class="glass stat"><div class="num">4</div><div class="lbl">Runner 角色</div></div>
+      <div class="glass stat"><div class="num">3</div><div class="lbl">内置 + 参考 Runner</div></div>
+      <div class="glass stat"><div class="num">18</div><div class="lbl">P0 验收项</div></div>
+      <div class="glass stat"><div class="num">1</div><div class="lbl">份机读契约</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="pipeline">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-label">线性管道</div>
+      <h2>Task 即最小编排单位，<br />runner 严格串行。</h2>
+      <p class="sec-sub">
+        一次 Task 就是一条完整管道：部署被测服务、前置门检查、正式测试、幂等拆除。
+        没有隐藏阶段，没有并发分叉——隔离由拓扑保证，事实由产物说话。
+      </p>
+    </div>
+    <div class="pipe reveal">
+      <div class="stage"><div class="t">service-deploy</div><div class="d">内置 · 拉起被测服务</div></div>
+      <span class="arrow">→</span>
+      <div class="stage"><div class="t">pre_check</div><div class="d">前置门 · 探活校验</div></div>
+      <span class="arrow">→</span>
+      <div class="stage"><div class="t">test ×N</div><div class="d">正式评测 · 产 result</div></div>
+      <span class="arrow">→</span>
+      <div class="stage"><div class="t">service-clean</div><div class="d">内置 · finally 拆除</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-label">核心特性</div>
+      <h2>为人类与 Agent 共同设计。</h2>
+      <p class="sec-sub">UI 给人看，API 给 Agent 用，语义完全对等。一份 OpenAPI 3.1 契约是唯一规格来源。</p>
+    </div>
+    <div class="cards">
+      <div class="glass card reveal">
+        <div class="icon">⇄</div>
+        <h3>声明式 Runner 契约</h3>
+        <p>runner.yaml + 镜像 + exec-form entry。输入走落盘 params.jsonl，产物三选一：result.json / html / csv。Runner 能脱离平台独立运行。</p>
+      </div>
+      <div class="glass card reveal">
+        <div class="icon">⚡</div>
+        <h3>exports 信息传递</h3>
+        <p>runner 向 exports.env 写 KV，平台词法收割、按管道序注入下游。AG_SERVED_URL 等公共参数由 deploy 导出或静态声明，Runner 不感知 Endpoint。</p>
+      </div>
+      <div class="glass card reveal">
+        <div class="icon">⟲</div>
+        <h3>Task 级重试</h3>
+        <p>重试 = 整 Task 全量重跑含 fresh deploy，杜绝 warm cache 污染测量。attempt 单调递增，(task_id, attempt, seq) 精确定位每次执行。</p>
+      </div>
+      <div class="glass card reveal">
+        <div class="icon">☸</div>
+        <h3>K8s 原生执行</h3>
+        <p>唯一执行后端是 K8s Job，每 runner 一个、幂等键去重。Genet 负责服务部署生命周期，平台不直连集群。</p>
+      </div>
+      <div class="glass card reveal">
+        <div class="icon">◉</div>
+        <h3>Agent 友好</h3>
+        <p>OpenAPI 3.1 机读契约、llms.txt、结构化错误码。Agent 可以直接提交 Task、读结果、写 Runner——和人类走同一个接口。</p>
+      </div>
+      <div class="glass card reveal">
+        <div class="icon">▤</div>
+        <h3>控制台 Web UI</h3>
+        <p>shadcn/ui 桌面优先控制台：Task 列表、详情、报告、日志、提交全链路覆盖，文件产物以页面内弹窗呈现。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="modes">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-label">运行模式</div>
+      <h2>两种接入方式，同一条管道。</h2>
+    </div>
+    <div class="modes">
+      <div class="glass mode reveal">
+        <div class="tag">deploy 模式</div>
+        <h3>平台拉起被测服务</h3>
+        <p>提交 deploy 配置，平台自动前置 service-deploy、追加 service-clean。评测一个还未上线的服务。</p>
+        <ul>
+          <li>service-deploy 调 Genet 起 Helm release</li>
+          <li>deploy-state.json 周期报告排队与就绪</li>
+          <li>exports 自动注入下游所有 runner</li>
+          <li>clean 在成功 / 失败 / 取消 / 超时全路径执行</li>
+        </ul>
+      </div>
+      <div class="glass mode reveal">
+        <div class="tag">外接模式</div>
+        <h3>评测已有 Endpoint</h3>
+        <p>提交静态 service 块指向已运行服务，无部署开销，专注测试本身。与 deploy 二选一，互斥校验。</p>
+        <ul>
+          <li>service.url + model 直接声明</li>
+          <li>无 deploy / clean runner，管道更短</li>
+          <li>同一套 AG_SERVED_* 公共参数投影</li>
+          <li>适合回归评测与对比基准</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="runners">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-label">Runner 生态</div>
+      <h2>已就绪的 Runner。</h2>
+      <p class="sec-sub">Registry 目录发现 + content_sha 指纹 + name@version 不可覆盖。deploy / clean 角色拒绝注册。</p>
+    </div>
+    <div class="chips reveal">
+      <span class="chip"><b>endpoint-probe</b><span class="role">pre_check · 参考</span></span>
+      <span class="chip"><b>aisbench-sla</b><span class="role">test · 前缀缓存 SLA 搜索</span></span>
+      <span class="chip"><b>agentx</b><span class="role">test · 长上下文 agentic 压测</span></span>
+      <span class="chip"><b>service-deploy</b><span class="role">deploy · 内置</span></span>
+      <span class="chip"><b>service-clean</b><span class="role">clean · 内置</span></span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="glass cta-band reveal">
+      <h2>开始编排你的第一条评测流水线。</h2>
+      <p>本机 Kind 约 10 分钟跑通：从集群、控制面到第一个 Task，一条命令链到底。</p>
+      <a class="btn btn-primary" href="https://github.com/ucm-system/Argus#readme">阅读文档 →</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="wordmark"><img src="assets/argus-icon.webp" alt="" style="width:26px;height:26px" /> Argus</div>
+    <div class="f-links">
+      <a href="https://github.com/ucm-system/Argus">GitHub</a>
+      <a href="https://github.com/ucm-system/Argus/blob/main/design/ARCHITECTURE.md">架构</a>
+      <a href="https://github.com/ucm-system/Argus/blob/main/GLOSSARY.md">术语表</a>
+      <a href="https://github.com/ucm-system/Argus/issues">Issues</a>
+    </div>
+    <div class="note">© 2026 Argus · 原 TestPlane · 设计先行</div>
+  </div>
+</footer>
+
+<script>
+  const nav = document.getElementById('nav');
+  addEventListener('scroll', () => nav.classList.toggle('scrolled', scrollY > 40), { passive: true });
+
+  const io = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+  }), { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
