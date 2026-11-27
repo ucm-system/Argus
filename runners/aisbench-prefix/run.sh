@@ -43,7 +43,7 @@
 # =============================================================================
 set -uo pipefail   # 不用 -e：任何一步失败也要把 result.json 写出来（§5.9）
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 # 自身位置：镜像里是 /runner，仓库里直接跑就是 runners/aisbench-prefix——两种情况同构。
 SELF="${BASH_SOURCE[0]}"
 command -v readlink >/dev/null 2>&1 && SELF="$(readlink -f "${SELF}" 2>/dev/null || printf '%s' "${SELF}")"
@@ -125,7 +125,7 @@ write_result() {
   AG_RUNNER_IMAGE="${IMAGE_REF}" \
   AG_RUNNER_VERSION="${VERSION}" \
   AG_STARTED="${STARTED}" AG_START_EPOCH="${START_EPOCH}" \
-  AG_AISBENCH_VERSION="${AISBENCH_VERSION:-unknown}" \
+  AG_AISBENCH_VERSION="${AISBENCH_VERSION:-unknown}" AG_TOOL_VERSION="${VERSION}" \
   "${PYTHON}" "${SUMMARIZE_PY}" --out "${OUT}" || return 1
 }
 
@@ -269,6 +269,17 @@ fi
 URL="${URL:-${AG_SERVED_URL:-}}"
 MODEL_NAME="${MODEL_NAME:-${AG_SERVED_MODEL_NAME:-}}"
 MODEL_PATH="${MODEL_PATH:-${AG_MODEL_PATH:-}}"
+# 【kind 实测】tokenizer 目录是**硬要求**，不是"只有生成数据集才需要"：
+# ais_bench 的 default_perf 汇总器自己会 `load_tokenizer(model_cfg["path"])` 来算
+# 每条请求的 token 数（`workers.py → default_perf._load_details_perf_data`）。
+# 于是路径给错/不存在时，压测会跑完、汇总阶段才报 UTILS-CFG-002 / UTILS-FILE-003，
+# 白烧几分钟。这里提前判，并把该怎么做写进消息。
+if [ -z "${MODEL_PATH}" ]; then
+  param_error "缺少容器内 tokenizer 路径（公共参数 AG_MODEL_PATH，§5.4.1）：ais_bench 的性能汇总器要用它算 token 数。部署模式由 service-deploy 导出；外接模式（service:）目前平台不注入，可在 Task 里给 env: {AG_MODEL_PATH: /models/<模型名>}，或按 D-63 配统一共享挂载"
+fi
+case "${MODEL_PATH}" in
+  /*) [ -d "${MODEL_PATH}" ] || param_error "AG_MODEL_PATH 指向的目录不存在：${MODEL_PATH}（容器内绝对路径；由 D-63 统一共享挂载或 Profile 挂载提供，本 Runner 不代管权重）" ;;
+esac
 
 [ "${#UNKNOWN[@]}" -eq 0 ] || param_error "无法识别的参数：${UNKNOWN[*]}（业务参数只走输入文件；公共参数用 --url / --model_name / --model_path）"
 [ -n "${URL}" ] || param_error "缺少被测服务地址（--url 或环境变量 AG_SERVED_URL，公共参数 §5.4.1）"
@@ -378,13 +389,15 @@ export PYTHONUNBUFFERED=1
 
 AISBENCH_VERSION="$(${PYTHON} -c 'import ais_bench.benchmark as m; print(getattr(m, "__version__", "unknown"))' 2>/dev/null || echo unknown)"
 log "ais_bench：cmd=${AISBENCH_CMD} version=${AISBENCH_VERSION}"
+log "寻址：url=${TARGET} model_name=${MODEL_NAME} model_path=${MODEL_PATH}（model_path 必须是容器内可加载的 tokenizer 目录）"
 
 # --- 被测服务可达性预检（只为把错误说清楚，不替代 endpoint-probe）----------------
-# 三次尝试、每次 10s：kind/容器网络在集群重启后有几秒抖动，单次探测会把「还没就绪」
-# 误判成「不可达」（本机 kind 实测：precheck 第 7 次才通，而这里单次 10s 直接判死）。
+# 要给足耐心：kind 上新建 Pod 的头 1-2 分钟里 pod→service 的转发可能还没就绪
+# （本机实测：precheck 第 7 次才 HTTP 200，而这里 3 次×10s 直接误判「不可达」，
+# 白烧一个 Task）。12 次 × 10s + 5s 间隔 ≈ 3 分钟，远小于平台 watchdog。
 if [ "${TEST_ACCURACY}" != "true" ]; then
   PROBE_OK="false"
-  for attempt in 1 2 3; do
+  for attempt in $(seq 1 12); do
     if "${PYTHON}" - "${TARGET}" <<'PYPROBE' >&2
 import socket, sys
 from urllib.parse import urlparse
@@ -400,12 +413,12 @@ except OSError as exc:
     print(f"[probe] TCP 连不上 {host}:{port}：{exc}", file=sys.stderr)
     sys.exit(1)
 PYPROBE
-    then PROBE_OK="true"; break; fi
-    log "可达性预检第 ${attempt} 次未通过：${TARGET}"
+    then PROBE_OK="true"; [ "${attempt}" -gt 1 ] && log "可达性预检第 ${attempt} 次通过"; break; fi
+    [ $(( attempt % 4 )) -eq 0 ] && log "可达性预检已重试 ${attempt} 次仍未通：${TARGET}"
     sleep 5
   done
   if [ "${PROBE_OK}" != "true" ]; then
-    hard_fail "被测服务不可达：${TARGET}（三次 TCP 连接都失败）。先看 precheck 的 endpoint-probe 日志与网络策略（NetworkPolicy 默认拒绝，需要放行被测端口）" \
+    hard_fail "被测服务不可达：${TARGET}（约 3 分钟内 12 次 TCP 连接都失败）。若 precheck 是通过的，说明是集群网络还没就绪或 NetworkPolicy 没放行该端口" \
       "ENDPOINT_UNREACHABLE" "未执行任何压测" "true"
   fi
 fi

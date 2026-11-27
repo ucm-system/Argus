@@ -115,7 +115,7 @@ export PYTHONPATH="${RUNNER_DIR}/tests/fakepkgs${PYTHONPATH:+:${PYTHONPATH}}"
 export STUB_WORK_DIR=""      # 让桩靠 --config-dir 找配置（更贴近真 ais_bench）
 
 WORK_PATH="${WORK}/ws"
-mkdir -p "${WORK_PATH}"
+mkdir -p "${WORK_PATH}" "${WORK}/model_weights"      # model_weights 只当 tokenizer 占位（假 tokenizer 不看内容）
 export AGP_WORK_PATH="${WORK_PATH}"
 
 echo "== 起 mock 服务 :${PORT} =="
@@ -296,6 +296,12 @@ run_prefix "unknown-field" '{"concurrency":[2],"nope":1}'
 [ "${CASE_RC}" -eq 2 ] && ok "未声明字段 → exit 2" || bad "exit ${CASE_RC}（期望 2）"
 run_prefix "bad-seed" '{"concurrency":[2],"seed":-1}'
 [ "${CASE_RC}" -eq 2 ] && ok "seed 非法 → exit 2" || bad "exit ${CASE_RC}（期望 2）"
+# 公共参数缺失也要**提前**报，而不是让 ais_bench 跑完压测才在汇总阶段炸（kind 实测）
+run_prefix "no-model-path" "$(base_params 1)" AG_MODEL_PATH= AGP_MODEL_PATH=
+[ "${CASE_RC}" -eq 2 ] && ok "缺 AG_MODEL_PATH → exit 2（提前拦，不烧压测时间）" || bad "exit ${CASE_RC}（期望 2）"
+grep -qi 'tokenizer' "${CASE_OUT}/result.json" && ok "消息写明要 tokenizer 目录" || bad "消息没解释清楚"
+run_prefix "ghost-model-path" "$(base_params 1)" AG_MODEL_PATH=/models/does-not-exist
+[ "${CASE_RC}" -eq 2 ] && ok "model_path 不存在 → exit 2" || bad "exit ${CASE_RC}（期望 2）"
 
 echo
 echo "== G 凭据零泄漏 =="

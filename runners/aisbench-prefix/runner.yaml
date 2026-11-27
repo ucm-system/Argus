@@ -1,5 +1,5 @@
 name: aisbench-prefix
-version: 0.1.0
+version: 0.1.1
 display_name: AISBench 前缀缓存性能测量
 description: |
   用 AISBench（ais_bench）压被测推理服务，量**前缀缓存场景**下的延迟与吞吐，并按目标服务
@@ -17,9 +17,16 @@ description: |
   （被测地址、模型名、权重路径、数据集目录、aisbench 源码根、鉴权）全部走环境变量，
   负载信息走命令行，调用方**不需要也不应该改任何配置文件**。
   被测服务与模型是公共参数（§5.4.1）：AG_SERVED_URL / AG_SERVED_MODEL_NAME / AG_MODEL_PATH
-  由平台注入，不进输入文件。
+  由平台注入，不进输入文件。**AG_MODEL_PATH 是硬要求**（kind 真跑实测）：ais_bench 的
+  default_perf 汇总器自己会 `load_tokenizer(模型配置的 path)` 来算每条请求的 token 数，
+  缺了或路径不存在会在压测跑完之后才报 UTILS-CFG-002 / UTILS-FILE-003，白烧几分钟——
+  所以本 Runner 提前拦下并给 VALIDATION_ERROR。部署模式由 service-deploy 导出；
+  外接模式（`service:` 块）平台目前不注入，可在 Task 里给 `env: {AG_MODEL_PATH: /models/<模型名>}`
+  或按 D-63 配统一共享挂载。
+  另外 work_path 别写 /benchmark：平台 Job 根文件系统只读，run.sh 用
+  AIS_BENCH_DATASETS_CACHE + --config-dir 把 /tmp 下的影子源码根接给 ais_bench。
 
-  相对上游的三处行为修正（都在这轮反馈里提过）：
+  相对上游的四处行为修正（前三条是这轮反馈，第四条来自 kind 真跑）：
   1. **picked_ids.txt 自动清理**：上游把挑题记录写在 CWD 且只增不减，攒够次数就报
      `ERROR 生成数据集失败，请清空picked ids`（要人工删文件）。现在记录走 AGP_STATE_DIR，
      默认每次运行前清掉（keep_pick_state=true 可保留），并且失败时**不再 exit(0)**
@@ -30,6 +37,11 @@ description: |
   3. **ais_bench 失败不再被 tee 吞掉**：上游用 `shell=True` 跑
      `ais_bench … | tee … | tee …`，取的是最后一个 tee 的退出码，ais_bench 崩了也返回 0。
      现在走 `bash -o pipefail`，并按进程组支持单点超时（run_timeout）。
+  4. **命中率与指标键**（kind 真跑发现）：上游要求 vllm 与 external 两组计数器齐全，而
+     vLLM 默认只暴露 `vllm:prefix_cache_*` → 真跑时整张命中率表被丢掉；现在 hbm 齐就出
+     hbm 命中率，external 缺失写进 notes（不编 0）。每个指标带 `labels.point`：平台硬规则
+     是 `name+statistic+labels` 必须唯一，两点阶梯的预热阶段并发相同（都= prefix_num），
+     少了这个维度整个 Task 会被判 RESULT_INVALID。
 
 role: test
 
@@ -45,7 +57,7 @@ input_format: jsonl
 # 直接 FROM 它过不了 release.yml 的双架构清单校验，所以这里按上游 docker/ubuntu/Dockerfile 的思路
 # 自己打：python:3.10-slim（多架构）+ `pip install ais-bench-benchmark==3.1.20260630`。
 # 本 Runner 只用 ais_bench 的 API 压测路径（HTTP 打被测服务），不需要镜像里的 NPU/CANN 栈。
-image: ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0
+image: ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1
 
 resources:
   cpu: "2"

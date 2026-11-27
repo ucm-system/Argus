@@ -287,13 +287,13 @@ python:3.10-slim-bookworm                    # 多架构官方基础镜像
 
 ```bash
 docker build -f runners/aisbench-prefix/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0 \
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1 \
   runners/aisbench-prefix
 
 # 多架构（= release.yml 的做法；arm64 走 qemu，慢）
 docker buildx build --platform linux/amd64,linux/arm64 --push \
   -f runners/aisbench-prefix/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0 runners/aisbench-prefix
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1 runners/aisbench-prefix
 
 # 关键断言：镜像里真有 ais_bench，且跑在 uid 10001
 docker run --rm <img> bash -lc 'command -v ais_bench && ais_bench --help >/dev/null && id'
@@ -339,7 +339,7 @@ echo '{"concurrency":[16],"input_len":2048,"output_len":1024,"data_num":64,
 docker run --rm --add-host=host.docker.internal:host-gateway \
   -e AG_TASK_ID=local -v /tmp/prefix-out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
-  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0 \
+  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1 \
   /runner/run.sh --url http://host.docker.internal:8000/v1 \
     --model_name Qwen3-32B --model_path /models/Qwen3-32B
 ```
@@ -354,9 +354,9 @@ py -3.11 runners/aisbench-prefix/tests/test_summarize.py
 
 # 2) 容器里的全链路冒烟（唯一入口；同一条命令也能在任意装了 pandas/requests 的 Linux 里跑）
 docker build -f runners/aisbench-prefix/tests/Dockerfile.stub \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0-stub runners/aisbench-prefix
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1-stub runners/aisbench-prefix
 docker run --rm --entrypoint bash \
-  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0-stub /runner/tests/smoke.sh
+  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1-stub /runner/tests/smoke.sh
 ```
 
 | 用例 | 构造 | 断言 |
@@ -412,19 +412,58 @@ bash runners/aisbench-prefix/tests/smoke.sh
 py -3.11 runners/aisbench-prefix/tests/validate_result_schema.py
 # 5) 发布镜像按发版 context 构建（双架构见上一节）
 docker build -f runners/aisbench-prefix/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.0 runners/aisbench-prefix
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.1 runners/aisbench-prefix
 ```
 
-## 本机验证记录（2026-11-27，0.1.0）
+## 本机验证记录（2026-11-27）
 
 | 项 | 命令 | 结果 |
 |---|---|---|
 | vendor 溯源 | `git hash-object` vs `gh api …/git/trees/main` | 7 个未改动文件 blob **逐字节一致**（commit `d9c24f38`）；4 个已改 + 1 个新增见 `tool/VENDORED.md` 的改动表 |
-| runner.yaml | 临时注册表测试（Parse + placeholder） | `OK aisbench-prefix@0.1.0 role=test params=32`，placeholder 单行合法且键全部已声明 |
-| 离线单测 | `tests/test_prefix_env.py` / `test_dataset_determinism.py` / `test_summarize.py` | 11 / 6 / 7 全绿（含「同 seed 数据集逐字节相同」「记录标满 → SystemExit(3)」「哨兵值不写成指标」） |
-| 全链路冒烟 | `bash tests/smoke.sh`（WSL Ubuntu 24.04 + venv，真 python 链路，桩 ais_bench + 假服务端） | **PASS=36 FAIL=0**：A–H 全部断言通过；`grep` 明文 key **0 命中** |
-| 契约 | `tests/validate_result_schema.py` | RESULT SCHEMA **PASS (6/6)**（成功/全点失败/部分失败/超时/两种参数错误） |
-| 真镜像构建与真服务 | — | **未做**：本机 Docker 引擎未起（`docker info` 连不上 npipe），且需要一个真实 vLLM 服务。留待 CI 与联调环境验证，见「平台上提交」的 Task 示例 |
+| runner.yaml | 临时注册表测试（Parse + placeholder） | `OK aisbench-prefix@0.1.1 role=test params=32`，placeholder 单行合法且键全部已声明 |
+| 离线单测 | `tests/test_prefix_env.py` / `test_dataset_determinism.py` / `test_summarize.py` | 12 / 6 / 11 全绿（同 seed 数据集逐字节相同、记录标满 → `SystemExit(3)`、哨兵值不写成指标、**指标键唯一**、逐点命中率、external 缺失不编 0） |
+| 全链路离线冒烟 | `bash tests/smoke.sh`（WSL Ubuntu 24.04 + venv，桩 ais_bench + 假服务端） | **PASS=43 FAIL=0**：A/A2/A3/B/C/D/E/F/G 全部断言通过；`grep` 明文 key **0 命中** |
+| 契约 | `tests/validate_result_schema.py` | RESULT SCHEMA **PASS**（成功/全点失败/部分失败/超时/参数错误全部过 openapi `Result`，含 `ErrorCode` enum） |
+| 发布镜像 | `docker build -f build/Dockerfile …`（PyPI 清华镜像源） | 0.1.1，**627 MB**（python:3.10-slim + CPU torch 2.14.1 + ais_bench 3.1.0）；构建期自检过（`ais_bench --help`、uid 10001、可写目录） |
+| **kind 真跑（真 ais_bench 3.1.20260630 + mock 服务 + 真 tokenizer）** | 平台 API 提交 Task，`service:` 外接模式 + `precheck: auto`，镜像先 `load-image.ps1` 灌进节点 | 两条链路都验证过，见下 |
+
+kind 真跑细节（Task `t-20261127-A9MT`，runner `aisbench-prefix@0.1.1`）：
+
+```yaml
+service: { url: http://mock-llm.argus.svc.cluster.local:18080/v1, model_name: qwen3-32b }
+env: { AG_MODEL_PATH: /models/mini }     # 外接模式平台不注入 AG_MODEL_PATH，Task env 给
+input: {"concurrency":[2,4],"input_len":256,"output_len":16,"data_num":16,
+        "dataset_type":"prefix_cache","repeat_rate":"90%","prefix_test":true,
+        "seed":7,"seed_per_point":true,"run_timeout":600}
+```
+
+结果：`succeeded`，62 metrics / 38 artifacts / duration 50.2s；每点独立预热 + 命中率
+（`hit_rate hbm c=2 → 42.7%`、`c=4 → 66.11%`，`labels.point` 区分）；实测并发
+1.97/3.71 对得上目标 2/4；`external_prefix_cache_*` 缺失在 notes 写明（不编 0）。
+
+kind 真跑发现并当场修掉的问题（都已带回归测试）：
+
+| # | 症状 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | `OSError [Errno 30] Read-only file system` | 工具以 `open('default_api.py','r+')` 打开**只读根文件系统**里的模板 | 改 `'r'`；smoke 加静态断言（A3） |
+| 2 | 所有请求 404（`error_info: "Not Found"`） | ais_bench 3.1.**20260630** 给非空 path 补尾斜杠，`url=…/v1` 被拼成 `…/v1/v1/chat/completions`（0330 版无此问题） | url 字段给**服务根**（去掉 `/v1` 段）；两种版本行为都进了单测 |
+| 3 | 命中率整张表丢失（`Skipped PODs`） | 上游要求 vllm+external 八个计数器字典齐全，vLLM 默认只有 `vllm:prefix_cache_*` | hbm/external 分开判；external 缺失写 notes 不编 0 |
+| 4 | 平台判 `RESULT_INVALID`（metrics[i] 与前面重复） | 附录 A 硬规则 `name+statistic+labels` 唯一；两点阶梯的预热阶段并发相同（都=prefix_num） | 所有指标加 `labels.point`；`concurrency` 去重；summarize 撞键丢弃并记录 |
+| 5 | `duration_ms=0` | `write_result` 赋值链里一个空行把 `AG_STARTED/AG_START_EPOCH` 断成 shell 局部变量 | 合并成一条前缀赋值 |
+| 6 | 压测跑完才报 `UTILS-CFG-002/003`（tokenizer） | ais_bench 的 default_perf 汇总器自己要 `load_tokenizer(path)` | `AG_MODEL_PATH` 缺失/目录不存在 → 提前 `VALIDATION_ERROR`（Task `t-20261127-181T` 验证：3 秒内 exit 2 + 明确消息） |
+| 7 | 预检 3 次×10s 误判「服务不可达」 | kind 上新 Pod 的前 1-2 分钟 pod→service 转发未就绪（endpoint-probe 第 7 次才 200） | 预检放宽到 12 次×10s + 5s 间隔（≈3 分钟） |
+
+> 验证环境备注：本机 kind 集群（16 天）在 Docker Desktop 重启后出现过 pod-to-pod 转发
+> 与 DNS 的间歇性退化（节点 `arp_filter/rp_filter=1` 与 kindnet ptp 插件不兼容的已知形态），
+> 重启节点容器后恢复——这是环境问题，与 Runner 无关，但它正是第 7 条放宽容忍度的原因。
+
+## 未做 / 后续
+
+- **arm64 镜像构建**：Dockerfile 是双架构安全的（torch/ais_bench wheel 都有 aarch64），但本机
+  没跑 `--platform linux/arm64` 全量构建（qemu 下 torch 解依赖很慢），交给 release.yml 发版时验证。
+- **推送 GHCR**：镜像只在本地 kind 里（`load-image.ps1` 灌入），未 `docker push`——按 §6.2
+  由 CI 发版路径推送。
+- **PR**：分支 `feat/aisbench-prefix-runner` 待评审合入。
 
 > 冒烟证明的是**链路与产物形态**（参数映射、退出码、seed、清理、零泄漏、schema），
 > 不是任何真实模型的性能数字——假 tokenizer 逐字符分词、假 ais_bench 用确定性公式打表。

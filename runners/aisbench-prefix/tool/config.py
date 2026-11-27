@@ -26,7 +26,9 @@ WORK_PATH = _env("AGP_WORK_PATH", "/tmp/prefix-ws")
 # 服务化配置的模型名称（公共参数 AG_SERVED_MODEL_NAME）
 MODEL_NAME = _env("AGP_MODEL_NAME", "ds")
 # 模型权重路径, 用于读取 tokenizer（公共参数 AG_MODEL_PATH，由平台统一共享挂载提供，D-63）
-MODEL_PATH = _env("AGP_MODEL_PATH", "/home/weights/model_weights")
+# 缺省给 /models（镜像里建好了）：ais_bench 校验 `path` 必须存在，上游那个
+# /home/weights/model_weights 占位在容器里必然 UTILS-CFG-002。
+MODEL_PATH = _env("AGP_MODEL_PATH", "/models")
 
 # 目标服务：AGP_URL 优先（平台注入的 AG_SERVED_URL 原样给出，形如 http://host:port/v1）。
 # 上游只认 HOST_IP/HOST_PORT，而 ais_bench 校验 host_ip 必须是合法 IP —— 集群内 DNS 名会被拒，
