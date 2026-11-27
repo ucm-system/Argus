@@ -1,4 +1,4 @@
-# AISBench 性能和前缀缓存测试（0.3.5）
+# AISBench 性能和前缀缓存测试（0.3.6）
 
 对已经运行的模型服务准备数据、预热、压测，再汇总性能和缓存命中率。实现从用户提供的 reference 两套脚本迁移而来。模型服务、UCM 和清缓存由环境负责。
 
@@ -118,6 +118,8 @@ rounds 各组放 groups/N，根目录汇总表格；平台多行参数放 cases/
 
 ## 平台参数和镜像
 
+Dockerfile 支持 Buildx 的 linux/amd64、linux/arm64，按 TARGETARCH 选择对应 AISBench 基础镜像。BASE_AMD64、BASE_ARM64 和 PIP_INDEX_URL 可通过 --build-arg 覆盖；两个平台使用相同固定依赖。双架构构建及逐架构冒烟测试见 [镜像发布说明](../../docs/aisbench-dockerhub.md)。下面的 docker build 只构建当前目标架构。
+
 平台扫描 runner.yaml。公共参数用 AG_SERVED_URL、AG_SERVED_MODEL_NAME、AG_MODEL_PATH，业务 JSONL 每行一组：
 
 ```json
@@ -128,7 +130,7 @@ rounds 各组放 groups/N，根目录汇总表格；平台多行参数放 cases/
 
 ```bash
 docker build -f runners/aisbench-perf/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-perf:0.3.5 runners/aisbench-perf
+  -t ghcr.io/ucm-system/argus-runner-aisbench-perf:0.3.6 runners/aisbench-perf
 python -m unittest discover -s runners/aisbench-perf/tests
 # 在已有 AISBench 环境里，用模拟服务验证真实调用链：
 python3 runners/aisbench-perf/tests/real_smoke.py

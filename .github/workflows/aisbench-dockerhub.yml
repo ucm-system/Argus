@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '镜像标签；留空使用各自 runner.yaml 的 version（例如 0.3.5）'
+        description: '镜像标签；留空使用各自 runner.yaml 的 version（例如 0.3.6）'
         required: false
         default: ''
         type: string
@@ -34,15 +34,20 @@ jobs:
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  publish:
-    name: Build and publish ${{ matrix.runner }}
+  build:
+    name: Build and test ${{ matrix.runner }} (${{ matrix.platform.arch }})
     needs: source
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.platform.host }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         runner: [aisbench-acc, aisbench-perf]
+        platform:
+          - arch: amd64
+            host: ubuntu-22.04
+          - arch: arm64
+            host: ubuntu-22.04-arm
     defaults:
       run:
         shell: bash
@@ -53,44 +58,13 @@ jobs:
           ref: ${{ needs.source.outputs.sha }}
 
       - name: Prepare image tags
-        id: meta
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           REQUESTED_TAG: ${{ inputs.tag }}
           AISBENCH_RUNNER: ${{ matrix.runner }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
-            echo '::error::请配置仓库 Actions Secrets：DOCKERHUB_USERNAME 和 DOCKERHUB_TOKEN'
-            exit 1
-          fi
-          if [[ ! "$DOCKERHUB_USERNAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
-            echo '::error::DOCKERHUB_USERNAME 应为 Docker Hub 用户名，不包含 URL 或斜杠'
-            exit 1
-          fi
-          tag="$REQUESTED_TAG"
-          if [[ -z "$tag" ]]; then
-            tag="$(sed -n 's/^version: *//p' "runners/$AISBENCH_RUNNER/runner.yaml" | tr -d '\r')"
-          fi
-          if [[ ! "$tag" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ || "$tag" == latest || "$tag" == sha-* ]]; then
-            echo '::error::tag 必须为有效 Docker 标签；latest 和 sha- 前缀保留，不能手动指定'
-            exit 1
-          fi
-          image="docker.io/$DOCKERHUB_USERNAME/argus-runner-$AISBENCH_RUNNER"
-          source_sha="$(git rev-parse HEAD)"
-          {
-            echo "IMAGE=$image"
-            echo "IMAGE_TAG=$tag"
-            echo "SOURCE_SHA=$source_sha"
-            echo "SHA_TAG=sha-$source_sha"
-          } >> "$GITHUB_ENV"
-          {
-            echo 'tags<<TAGS'
-            echo "$image:$tag"
-            echo "$image:sha-$source_sha"
-            echo 'TAGS'
-          } >> "$GITHUB_OUTPUT"
+          AISBENCH_ARCH: ${{ matrix.platform.arch }}
+        run: python3 .github/scripts/aisbench_image.py meta
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -106,51 +80,131 @@ jobs:
         with:
           context: runners/${{ matrix.runner }}
           file: runners/${{ matrix.runner }}/build/Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.platform.arch }}
           load: true
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.IMAGE }}:${{ env.STAGING_TAG }}
           provenance: false
           sbom: false
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.source.outputs.sha }}
-          cache-from: type=gha,scope=dockerhub-${{ matrix.runner }}
-          cache-to: type=gha,mode=max,scope=dockerhub-${{ matrix.runner }}
+          cache-from: type=gha,scope=dockerhub-${{ matrix.runner }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=dockerhub-${{ matrix.runner }}-${{ matrix.platform.arch }}
 
       - name: Check entrypoint and run AISBench smoke test
         timeout-minutes: 10
+        env:
+          EXPECTED_PLATFORM: linux/${{ matrix.platform.arch }}
         run: |
           set -euo pipefail
+          actual="$(docker image inspect "$IMAGE:$STAGING_TAG" --format '{{.Os}}/{{.Architecture}}')"
+          test "$actual" = "$EXPECTED_PLATFORM"
           docker run --rm --init --read-only \
             --tmpfs /tmp:rw,exec,size=4g --shm-size=1g \
-            "$IMAGE:$IMAGE_TAG" --help
+            "$IMAGE:$STAGING_TAG" --help
           docker run --rm --init --read-only \
             --tmpfs /tmp:rw,exec,size=4g --shm-size=1g \
-            --entrypoint python3 "$IMAGE:$IMAGE_TAG" /runner/tests/real_smoke.py
+            --entrypoint python3 "$IMAGE:$STAGING_TAG" /runner/tests/real_smoke.py
 
-      - name: Push tested image and write summary
+      - name: Push tested platform image
         run: |
           set -euo pipefail
-          docker push "$IMAGE:$IMAGE_TAG"
-          docker push "$IMAGE:$SHA_TAG"
-          digest="$(docker image inspect "$IMAGE:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')"
+          docker push "$IMAGE:$STAGING_TAG"
+          ref="$(docker image inspect "$IMAGE:$STAGING_TAG" --format '{{index .RepoDigests 0}}')"
+          digest="${ref##*@}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p image-digest
+          printf '%s\n' "$digest" > image-digest/digest.txt
+
+      - name: Upload tested digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.runner }}-${{ matrix.platform.arch }}
+          path: image-digest/digest.txt
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  publish:
+    name: Publish multi-platform ${{ matrix.runner }}
+    needs: [source, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [aisbench-acc, aisbench-perf]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+
+      - name: Prepare final tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          AISBENCH_RUNNER: ${{ matrix.runner }}
+        run: python3 .github/scripts/aisbench_image.py meta
+
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: digest-${{ matrix.runner }}-amd64
+          path: digests/amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: digest-${{ matrix.runner }}-arm64
+          path: digests/arm64
+
+      - name: Assemble and verify tested index
+        run: |
+          set -euo pipefail
+          refs=()
+          for arch in amd64 arm64; do
+            digest="$(cat "digests/$arch/digest.txt")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            refs+=("$IMAGE@$digest")
+          done
+          docker buildx imagetools create --tag "$IMAGE:$INDEX_TAG" "${refs[@]}"
+          docker buildx imagetools inspect "$IMAGE:$INDEX_TAG" --format '{{json .Manifest}}' > index.json
+          digest="$(python3 .github/scripts/aisbench_image.py verify-index index.json digests)"
+          echo "INDEX_DIGEST=$digest" >> "$GITHUB_ENV"
+
+      - name: Publish final tags and write summary
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$IMAGE:$IMAGE_TAG" --tag "$IMAGE:$SHA_TAG" "$IMAGE@$INDEX_DIGEST"
+          for tag in "$IMAGE_TAG" "$SHA_TAG"; do
+            docker buildx imagetools inspect "$IMAGE:$tag" --format '{{json .Manifest}}' > published.json
+            digest="$(python3 .github/scripts/aisbench_image.py verify-index published.json digests)"
+            test "$digest" = "$INDEX_DIGEST"
+          done
           {
             echo "### $IMAGE"
             echo
             echo "- Version tag: \`$IMAGE:$IMAGE_TAG\`"
             echo "- Commit tag: \`$IMAGE:$SHA_TAG\`"
             echo "- Source: \`temp\` at \`$SOURCE_SHA\`"
-            echo "- Digest: \`$digest\`"
-            echo '- Platform: `linux/amd64`'
-            echo '- Entrypoint and AISBench mock-service smoke test passed.'
+            echo "- Index digest: \`$IMAGE@$INDEX_DIGEST\`"
+            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+            echo '- Entrypoint and AISBench mock-service smoke test passed on both native architectures.'
             echo
             echo 'Pull this tested image:'
             echo '```bash'
-            echo "docker pull $digest"
+            echo "docker pull $IMAGE@$INDEX_DIGEST"
             echo '```'
             echo 'Platform runner.yaml image (update the runner version when changing its manifest):'
             echo '```yaml'
-            echo "image: $digest"
+            echo "image: $IMAGE@$INDEX_DIGEST"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

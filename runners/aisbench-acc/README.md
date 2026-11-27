@@ -1,4 +1,4 @@
-# AISBench 精度测试（0.3.5）
+# AISBench 精度测试（0.3.6）
 
 对已经运行的模型服务做精度测试。`datasets` 使用容器里的 AISBench 数据集配置和原评分器；`dataset` 保留原有 GSM8K 逐题审计。模型与 UCM 由环境负责。
 
@@ -58,9 +58,11 @@ GSM8K 路径的结果包含 result.json、raw/resolved.json、raw/dataset，以�
 
 ## 构建和验证
 
+Dockerfile 支持 Buildx 的 linux/amd64、linux/arm64，按 TARGETARCH 选择对应 AISBench 基础镜像。BASE_AMD64、BASE_ARM64 和 PIP_INDEX_URL 可通过 --build-arg 覆盖；两个平台使用相同固定依赖。双架构构建及逐架构冒烟测试见 [镜像发布说明](../../docs/aisbench-dockerhub.md)。下面的 docker build 只构建当前目标架构。
+
 ```bash
 docker build -f runners/aisbench-acc/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-acc:0.3.5 runners/aisbench-acc
+  -t ghcr.io/ucm-system/argus-runner-aisbench-acc:0.3.6 runners/aisbench-acc
 python -m unittest discover -s runners/aisbench-acc/tests
 # 在已有 AISBench 环境，用模拟服务检查真实调用链：
 python3 runners/aisbench-acc/tests/real_smoke.py

@@ -1,10 +1,17 @@
+# syntax=docker/dockerfile:1
 # Build context: runners/aisbench-acc
-FROM ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-master_x86_64_py_310
+ARG TARGETARCH
+ARG BASE_AMD64=ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-master_x86_64_py_310
+ARG BASE_ARM64=ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-master_aarch64_py_310
+FROM ${BASE_AMD64} AS base-amd64
+FROM ${BASE_ARM64} AS base-arm64
+FROM base-${TARGETARCH} AS runtime
+ARG PIP_INDEX_URL=https://pypi.org/simple
 USER root
 WORKDIR /runner
 COPY build/requirements.txt /runner/build/requirements.txt
 # Install only at build time; the source archive is pinned in requirements.txt.
-RUN python3 -m pip install --no-cache-dir -r /runner/build/requirements.txt
+RUN python3 -m pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /runner/build/requirements.txt
 COPY . /runner
 RUN groupadd --gid 10001 aisbench \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /bin/bash aisbench \

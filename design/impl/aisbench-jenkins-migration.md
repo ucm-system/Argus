@@ -8,11 +8,15 @@
 
 2026-11-26 挂载约定（0.3.1）：平台将数据集根目录挂到 `/benchmark/ais_bench/datasets`，其下按数据集组织，例如 `gsm8k/train.jsonl`、`gsm8k/test.jsonl`。两个镜像设置 `AIS_BENCH_DATASETS_CACHE=/benchmark`，使配置中的 `ais_bench/datasets/gsm8k` 指向该挂载。该变量是原生数据集的查找根目录，与 `/tmp/hf/datasets` 中的 Hugging Face 中间缓存不同。数据不打包进镜像，挂载内容需可被运行用户读取。绝对数据路径仍按配置原值使用；自定义配置不采用 `ais_bench/datasets/...` 布局时需填写正确的绝对路径。本地 run-local.sh 将 DATA_DIR 同时挂到固定路径和兼容路径 /data；直接使用已有容器时需自行设置此环境变量。
 
-Docker Hub 发布：独立 workflow `aisbench-dockerhub.yml` 只由手动触发，同时构建 acc/perf 两个 Runner，构建上下文分别为 `runners/aisbench-acc`、`runners/aisbench-perf`，使用其中 `build/Dockerfile`。当前基础镜像为 x86_64，目标固定 `linux/amd64`。使用仓库 Secrets `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN` 登录，发布 `<username>/argus-runner-aisbench-{acc,perf}:<tag>` 及 `sha-<完整提交 SHA>`；tag 留空时读取各自 runner.yaml 的 version，不更新 latest。先加载镜像，以镜像默认非 root 用户运行入口帮助和现有 real_smoke.py，再推送同一份镜像；测试使用本地模拟服务，不要求 GPU、真实数据集或 UCM，也不代表真实服务验收。两个矩阵任务独立，可能一个成功另一个失败，汇总分别列出镜像和 digest。镜像发布不会自动修改平台注册信息，接入 Docker Hub 时需按版本规则更新 runner.yaml 的 image/version 并重启平台。原有 GHCR release workflow 保持独立。操作步骤见 [Docker Hub 发布说明](../../docs/aisbench-dockerhub.md)。
+Docker Hub 发布：独立 workflow `aisbench-dockerhub.yml` 只由手动触发，构建上下文分别为 `runners/aisbench-acc`、`runners/aisbench-perf`，使用其中 `build/Dockerfile`。使用仓库 Secrets `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN` 登录，发布 `<username>/argus-runner-aisbench-{acc,perf}:<tag>` 及 `sha-<完整提交 SHA>`；tag 留空时读取各自 runner.yaml 的 version，不更新 latest。测试使用本地模拟服务，不要求 GPU、真实数据集或 UCM，也不代表真实服务验收。镜像发布不会自动修改平台注册信息，接入 Docker Hub 时需按版本规则更新 runner.yaml 的 image/version 并重启平台。原有 GHCR release workflow 保持独立。操作步骤见 [Docker Hub 发布说明](../../docs/aisbench-dockerhub.md)。
 
-Docker Hub 的构建源码固定来自远端 `temp` 分支。每次 workflow 先解析一次 temp 的提交 SHA，再让两个构建任务检出同一 SHA，避免构建期间分支更新导致两个镜像使用不同代码。镜像 sha 标签、revision 标签和 Summary 都记录该源码 SHA，不使用触发 workflow 所在分支的 github.sha。
+Docker Hub 的构建源码固定来自远端 `temp` 分支。每次 workflow 先解析一次 temp 的提交 SHA，再让四个构建任务检出同一 SHA，避免构建期间分支更新导致镜像使用不同代码。镜像 sha 标签、revision 标签和 Summary 都记录该源码 SHA，不使用触发 workflow 所在分支的 github.sha。
 
 构建矩阵名称使用专用环境变量 `AISBENCH_RUNNER`，不得覆盖 GitHub 内置的 `RUNNER_NAME`（执行机器名称）。读取 runner.yaml 和生成镜像仓库名都使用该专用变量。
+
+0.3.6 多架构构建：两个 Dockerfile 用 BuildKit 的 TARGETARCH 选择 base-amd64/base-arm64；BASE_AMD64、BASE_ARM64 默认指向 AISBench v3.1-20260330-master 对应的 x86_64/aarch64 Python 3.10 镜像，支持通过构建参数覆盖；PIP_INDEX_URL 可指定依赖镜像源。保留 temp 的固定依赖安装策略，genet 的华为基础镜像适配不合入本分支。无 TARGETARCH 默认值，构建仅支持 amd64/arm64。两个平台使用相同 AISBench 源码和业务代码。
+
+CI 固定一次 temp 源码 SHA，展开 acc/perf × amd64/arm64 四个任务，分别使用 ubuntu-22.04 和 ubuntu-22.04-arm 原生节点。每个任务核对镜像 OS/Architecture，执行入口帮助和 real_smoke.py，通过后推送 run-<run_id>-<attempt>-<arch> 暂存标签，并上传该镜像 digest。缓存按 Runner 和架构隔离。四个构建任务全部成功后，两个发布任务分别下载本次运行的 amd64/arm64 digest，以 digest 合成暂存 index，校验仅包含 linux/amd64 和 linux/arm64 且子 digest 与测试产物一致，再发布版本及 sha 标签。失败时不把单架构镜像发布为正式多架构标签；成功的暂存镜像可能已留在仓库。两个最终发布任务并非事务，一个发布失败时另一个可能已经成功。Summary 中的 digest 是整个多架构 index 的 digest。重跑失败任务时，成功任务的本次运行 artifacts 可复用；不能按 sha 可变标签寻找另一个架构的产物。
 
 0.3.2 镜像用户修复：两个 Dockerfile 创建 aisbench 用户和组（UID/GID 10001），再切换到 `USER 10001:10001`，让 pwd.getpwuid 能解析用户。设置 USER/LOGNAME=aisbench，兼容本地 run-local.sh 覆盖数值 UID 时的 getpass.getuser；TORCH_HOME、TORCHINDUCTOR_CACHE_DIR、TRITON_CACHE_DIR 均放在 /tmp。构建末尾以非 root 用户检查用户记录并导入 AISBench CLI workers，覆盖本次 evaluate → transformers → torch._dynamo 导入失败链；GitHub workflow 继续使用只读根文件系统和可写 /tmp 运行真实 AISBench 模拟服务测试。不增加 run.sh 的版本或源码兼容性门禁。
 
