@@ -30,6 +30,8 @@ import os
 import sys
 import time
 
+import report
+
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024      # 单产物上限：超了保留末尾（日志尾部才是现场）
 MAX_ARTIFACT_COUNT = 300                   # 产物条数上限：长上下文一轮能出上千个小文件
 # save_file.DEFAULT_METRICS 里「没解析到」的哨兵值。原样写进 result.json 会被下游
@@ -258,6 +260,7 @@ def collect_artifacts(out):
     """列产物：每点的日志/CSV/配置/事件 + ais_bench 的 work-dir；datasets 只列名不列内容。"""
     patterns = [
         "aisbench_result.csv",
+        "result.html",
         "prefix_out/points/point-*/events.jsonl",
         "prefix_out/points/point-*/aisbench.log",
         "prefix_out/points/point-*/aisbench_all.log",
@@ -402,8 +405,15 @@ def main(argv=None):
         status, code = "failed", "RESULT_INVALID"
         reason = reason or "工具退出码 0 但没汇出任何指标（sidecar 里没有 metrics 事件）"
 
-    # 观察面 1：上游格式的聚合 CSV（人看的宽表；result.json 是给平台的长表）
+    # 三个观察面：result.json（平台长表）/ aisbench_result.csv（上游数据面）/ result.html（对比报告）
+    duration_ms = max(0, int((time.time() - (env_float("AG_START_EPOCH") or time.time())) * 1000))
     csv_path = write_result_csv(out, events, hit_events(events), config)
+    html_path = report.write_result_html(
+        out, events, hit_events(events), config,
+        {"status": status, "task_id": env("AG_TASK_ID", "local"),
+         "runner_version": env("AG_RUNNER_VERSION", "0.1.4"), "tool_version": env("AG_TOOL_VERSION", "0.1.4"),
+         "aisbench_version": env("AG_AISBENCH_VERSION", "unknown"),
+         "duration_ms": duration_ms, "config": config})
 
     artifacts, truncated, skipped = collect_artifacts(out)
 
@@ -423,8 +433,9 @@ def main(argv=None):
             "%s(%s,batch=%s,%d 项)" % (row["point"], row["phase"], row["concurrency"],
                                        row["metrics"]) for row in point_rows))
     if csv_path:
-        notes.append("观察用汇总表：aisbench_result.csv（上游 CSV 列序，"
-                     "一行 = 一个并发点的一个阶段；result.json 是给平台的长表）")
+        notes.append("观察面：result.html（阶梯对比报告，浏览器直开）· "
+                     "aisbench_result.csv（上游列序数据面，一行 = 一个并发点的一个阶段）· "
+                     "result.json（平台长表）")
     if skipped:
         notes.append(f"产物条目超过 {MAX_ARTIFACT_COUNT} 条，已省略 {skipped} 个文件"
                      f"（完整内容仍在产物目录里，只是不再逐个列进 artifacts）")
@@ -486,13 +497,12 @@ def main(argv=None):
         "attempt_no": env_int("AG_ATTEMPT", 1) or 1,
         "runner_seq": env_int("AG_RUNNER_SEQ", 1) or 1,
         "runner": {"name": "aisbench-prefix",
-                   "version": env("AG_RUNNER_VERSION", "0.1.3"),
+                   "version": env("AG_RUNNER_VERSION", "0.1.4"),
                    "image_ref": env("AG_RUNNER_IMAGE", "unknown")},
         "status": status,
         "started_at": env("AG_STARTED"),
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "duration_ms": max(0, int((time.time() - (env_float("AG_START_EPOCH")
-                                                  or time.time())) * 1000)),
+        "duration_ms": duration_ms,
         "workload": workload,
         "metrics": metrics,
         "error": error_obj,
@@ -500,7 +510,7 @@ def main(argv=None):
         "notes": notes_text,
         "metadata": {
             "tool": "aisbench-prefix",
-            "tool_version": env("AG_TOOL_VERSION", "0.1.2"),
+            "tool_version": env("AG_TOOL_VERSION", "0.1.4"),
             "tool_source": "vendored aisbench_auto_tools_prefix@"
                            "d9c24f3822dfdcf01545388561d6138e059851e4 + 本地改动"
                            "（见 tool/VENDORED.md）",

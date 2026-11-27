@@ -192,7 +192,21 @@ if [ -f "${RESULT}" ]; then
     else
         bad "缺聚合 CSV（aisbench_result.csv）"
     fi
-    # 观察面 2：每点的上游原始 CSV 仍在
+    # 观察面 2：result.html 对比报告（自包含，阶梯表 + 内联 SVG）
+    if [ -f "${CASE_OUT}/result.html" ]; then
+        ok "result.html 报告在输出根目录"
+        grep -q '并发阶梯' "${CASE_OUT}/result.html" && ok "阶梯表在" || bad "缺阶梯表"
+        # HTML 是单行文件，必须 grep -o 数出现次数（grep -c 数的是行数）
+        n_svg=$(grep -o '<svg ' "${CASE_OUT}/result.html" | wc -l)
+        [ "${n_svg}" -ge 3 ] && ok "趋势图 ${n_svg} 张" || bad "趋势图只有 ${n_svg} 张"
+        grep -qE 'src="http|href="http' "${CASE_OUT}/result.html" \
+            && bad "报告里引了外部资源" || ok "自包含（无外部资源引用）"
+        grep -q '"path": *"result.html"' "${RESULT}" \
+            && ok "result.html 列进了 artifacts" || bad "artifacts 没列 result.html"
+    else
+        bad "缺 result.html"
+    fi
+    # 观察面 3：每点的上游原始 CSV 仍在
     [ -f "${CASE_OUT}/prefix_out/points/point-4/aisbench_result.csv" ] \
         && ok "每点的上游原始 CSV 保留" || bad "缺每点 aisbench_result.csv"
     # 平台硬规则：name+statistic+labels 必须唯一，否则 Task 直接 RESULT_INVALID（kind 实测）

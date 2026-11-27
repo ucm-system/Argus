@@ -302,6 +302,44 @@ class SummarizeTests(unittest.TestCase):
         self.assertIn("aisbench_result.csv", {a["path"] for a in data["artifacts"]})
         self.assertIn("aisbench_result.csv", data["notes"])
 
+    def test_html_report_is_generated(self):
+        """观察面：result.html —— 自包含对比报告（阶梯表 + 内联 SVG 趋势图）。
+        多组数据的横向对比靠它；不引任何外部资源（产物会被下载到任意机器看）。"""
+        import copy
+        import re
+        for point, conc in (("2", "2"), ("4", "4"), ("8", "8")):
+            write_events(self.root, point, [
+                dict(CONFIG_EVENT),
+                {"kind": "metrics", "phase": "prefix", "concurrency": "1",
+                 "values": dict(FULL_METRICS, max_cc=1, cc=1.0)},
+                copy.deepcopy(HIT_EVENT_HBM_ONLY) | {"concurrency": conc},
+                {"kind": "metrics", "phase": "full", "concurrency": conc,
+                 "values": dict(FULL_METRICS, max_cc=int(conc),
+                                **{"TTFT avg": 100.0 + int(conc) * 5,
+                                   "output_throughput": 100.0 + int(conc) * 30})},
+            ])
+        data = run_summarize(self.root)
+        path = os.path.join(self.root, "result.html")
+        self.assertTrue(os.path.isfile(path), "result.html 没生成")
+        doc = open(path, encoding="utf-8").read()
+        # 自包含：不引外部资源（用户数据里的 URL 字符串不算——负载表本来就要显示被测地址）
+        self.assertNotIn('src="http', doc)
+        self.assertNotIn('href="http', doc)
+        self.assertNotIn("url(", doc.replace("url（", ""))   # css @import/url() 也不允许
+        self.assertNotIn("<script", doc)
+        # 阶梯表 3 行（full）+ 图 2 张（TTFT/TPOT/吞吐 3 张里，TPOT full 行有值 → 也该有）
+        self.assertEqual(len(re.findall(r'<h2>并发阶梯', doc)), 1)
+        self.assertGreaterEqual(len(re.findall(r'<svg ', doc)), 3)
+        # full 行的目标并发都在
+        for conc in ("2", "4", "8"):
+            self.assertIn(f"c={conc}", doc)
+        # 命中率进表
+        self.assertIn("命中率 HBM", doc)
+        # 哨兵值（E2E_time=99999）→ 显示为 — 而非数字
+        self.assertIn("—", doc)
+        # artifacts 里列了 result.html
+        self.assertIn("result.html", {a["path"] for a in data["artifacts"]})
+
     def test_workload_base_url_is_clean(self):
         write_events(self.root, "8", [
             dict(CONFIG_EVENT, base_url="http://10.0.0.9:8000/",
