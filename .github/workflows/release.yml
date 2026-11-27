@@ -67,7 +67,15 @@ jobs:
       - id: list
         name: 生成发布矩阵（server + web + 所有 Runner × 双架构）
         run: |
+          # 平台过滤放在**矩阵生成期**：job 级 `if` 不允许引用 `matrix` 上下文
+          #（GitHub 在 strategy 展开前求值，写进去会让整个 workflow 启动失败——
+          # 2026-11-27 实测所有 push 事件都 startup_failure）。dispatch 单平台
+          # 只生成请求的腿；PR / tag push 上 inputs.platforms 为空 = 双架构都要。
           entry() {  # entry <image> <dockerfile> <context> <platform> <arch> <runner>
+            expected="${{ inputs.platforms }}"
+            if [ -n "$expected" ]; then
+              printf '%s' "$expected" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -qx "$4" || return 0
+            fi
             printf '{"image":"%s","dockerfile":"%s","context":"%s","platform":"%s","arch":"%s","runner":"%s"},' \
               "$1" "$2" "$3" "$4" "$5" "$6"
           }
@@ -136,13 +144,12 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
-  # 每条腿：原生 runner 构建单个平台并按 digest 推送（不产生可变 tag，tag 由 merge 统一打）
+  # 每条腿：原生 runner 构建单个平台并按 digest 推送（不产生可变 tag，tag 由 merge 统一打）。
+  # 平台过滤在 discover 的矩阵生成期做（job 级 if 不允许 matrix 上下文）。
   build:
     name: 构建（${{ matrix.image }} / ${{ matrix.arch }}，原生）
     needs: discover
-    if: >-
-      (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') &&
-      (inputs.platforms == '' || contains(inputs.platforms, matrix.platform))
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
