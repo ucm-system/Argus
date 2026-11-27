@@ -29,6 +29,7 @@ import (
 	"github.com/ucm-system/testplane/server/internal/domain"
 	"github.com/ucm-system/testplane/server/internal/executor"
 	"github.com/ucm-system/testplane/server/internal/k8s"
+	"github.com/ucm-system/testplane/server/internal/modelprobe"
 	"github.com/ucm-system/testplane/server/internal/orchestrator"
 	"github.com/ucm-system/testplane/server/internal/registry"
 	"github.com/ucm-system/testplane/server/internal/report"
@@ -194,6 +195,16 @@ func run() error {
 		logger.Info("Volcano 队列快照已关闭（detail=disabled）")
 	}
 
+	// ---- 模型目录探针（GET /models 的数据源；K8s 不可用时留 nil，端点降级 available:false）----
+	var modelProber api.ModelProber
+	if probeClient, err := k8s.NewClientset(k8s.Options{Kubeconfig: cfg.Kubeconfig}); err == nil {
+		modelProber = modelprobe.New(probeClient, cfg.ModelProbeImage, cfg.ModelProbeTTL, logger)
+		logger.Info("模型目录探针就绪",
+			"image", cfg.ModelProbeImage, "ttl", cfg.ModelProbeTTL)
+	} else {
+		logger.Warn("模型目录探针未接线（GET /models 降级 available:false）", "err", err)
+	}
+
 	// ---- HTTP ----
 	srv := api.New(api.Deps{
 		Config: cfg, Store: st, Machines: machines,
@@ -203,6 +214,7 @@ func run() error {
 		WebUI:         webui.FS(), Version: version,
 		Volcano:        volcanoProvider,
 		SharedMountsFn: sharedMountsFn,
+		ModelProbe:     modelProber,
 	})
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

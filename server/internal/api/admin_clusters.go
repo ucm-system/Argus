@@ -69,6 +69,23 @@ func toAdminClusterDTO(c *store.Cluster) adminClusterDTO {
 	return out
 }
 
+// handleAdminListClusters 是 GET /api/v1/admin/clusters（admin）：
+// 管理台 Clusters 标签页的数据源。与 GET /clusters（viewer 只读概要）的区别是
+// 额外回显 `kubeconfig_key`（admin 可见的凭据定位名，轮换流程要用，web-and-delivery §11）；
+// 凭据内容本身仍然永不出现（06 §4.4）。
+func (s *Server) handleAdminListClusters(w http.ResponseWriter, r *http.Request) {
+	items, err := s.st.Clusters.List(r.Context(), nil)
+	if err != nil {
+		s.failErr(w, r, err)
+		return
+	}
+	out := make([]adminClusterDTO, 0, len(items))
+	for i := range items {
+		out = append(out, toAdminClusterDTO(&items[i]))
+	}
+	writeJSON(w, http.StatusOK, paged[adminClusterDTO]{Items: out, HasMore: false})
+}
+
 // handleAdminCreateCluster 是 POST /api/v1/admin/clusters（201）。
 func (s *Server) handleAdminCreateCluster(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

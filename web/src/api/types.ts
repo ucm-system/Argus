@@ -547,6 +547,8 @@ export interface Runner {
 export interface SharedMount {
   name: string
   mount_path: string
+  /** 同一卷的 Pod 内别名挂载点（一卷多挂载点，部分存储后端同一卷不允许挂两次）。 */
+  alias_paths: string[]
   read_only: boolean
   claim_name: string
   enabled: boolean
@@ -559,12 +561,27 @@ export interface SharedMountWrite {
   name: string
   mount_path: string
   claim_name: string
+  alias_paths?: string[]
   read_only?: boolean
   enabled?: boolean
 }
 
 /** PUT 的局部更新：`name` 不在里面（不可改） */
 export type SharedMountPatch = Partial<Omit<SharedMountWrite, 'name'>>
+
+/** `ModelListing` schema：`GET /models` 的应答（`available:false` 不是错误，前端回退手输框）。 */
+export interface ModelListing {
+  available: boolean
+  reason?: 'model_dir_not_mounted' | 'probe_unavailable' | 'probe_failed'
+  message?: string
+  profile?: string
+  namespace?: string
+  claim_name?: string
+  /** 命中的挂载点在 runner 容器内的路径（构造 `model_path` 用）。 */
+  mount_path?: string
+  models?: string[]
+  probed_at?: Timestamp | null
+}
 
 /** `Cluster` schema：集群概要（不返回凭据）。 */
 export interface Cluster {

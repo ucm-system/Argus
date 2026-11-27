@@ -60,6 +60,7 @@ flowchart LR
 | PDB | `argusd` | `minAvailable: 1` | 单副本下会阻塞 drain，见 §7.1 |
 | Lease | `argus-controller` / `argus-collector-leader` / `argus-log-<hash>` | TTL 15s / 续约 5s；日志 Lease 30s / 10s | 选主与"同文件单写者"（E-7.3） |
 | Job（运行时） | `argus-<task_id>-<attempt>-<seq>` | `backoffLimit: 0`、`restartPolicy: Never`、`activeDeadlineSeconds = timeout+60`、`automountServiceAccountToken: false`、labels `argus.io/task|attempt|runner-seq` | 平台渲染，**不在 chart 里**（E-2.2、附录 B 2.0） |
+| Job（模型探针） | `argus-model-probe-<hash8>` | `ttlSecondsAfterFinished: 120`、RO 挂共享挂载 claim、**不带** `argus.io/managed`（GC 不碰，靠 TTL 自清） | `GET /models` 按需现起，列 `/models` 目录（07 §5.3，2026-11-27） |
 | Job（hook） | `argusd-migrate` | `pre-install,pre-upgrade`、`hook-delete-policy: before-hook-creation` | 迁移唯一入口，见 §6.2 |
 
 ### 2.1 排队与可观测数据源

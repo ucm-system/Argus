@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -16,32 +17,42 @@ import (
 // 语义要点：
 //   - 本表是**运行时真源**；TESTPLANE_SHARED_MOUNTS 只在表为空时做一次性种子；
 //   - 渲染读 `enabled=true` 的行；管理面写完整行；
+//   - alias_paths 是同一卷的 Pod 内别名挂载点（一卷多挂载点，D-63）；
 //   - 平台只存 PVC 名（claim_name），**不创建** PV/PVC（§10.4 边界）。
 type SharedMountRepo struct{ s *Store }
 
 // SharedMount 是 shared_mounts 的一行。
 type SharedMount struct {
-	Name      string    `json:"name"`
-	MountPath string    `json:"mount_path"`
-	ReadOnly  bool      `json:"read_only"`
-	ClaimName string    `json:"claim_name"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	CreatedBy string    `json:"created_by"`
-	UpdatedBy string    `json:"updated_by"`
+	Name       string    `json:"name"`
+	MountPath  string    `json:"mount_path"`
+	AliasPaths []string  `json:"alias_paths"`
+	ReadOnly   bool      `json:"read_only"`
+	ClaimName  string    `json:"claim_name"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	CreatedBy  string    `json:"created_by"`
+	UpdatedBy  string    `json:"updated_by"`
 }
 
-const sharedMountCols = `name, mount_path, read_only, claim_name, enabled, created_at, updated_at, created_by, updated_by`
+const sharedMountCols = `name, mount_path, alias_paths, read_only, claim_name, enabled, created_at, updated_at, created_by, updated_by`
 
 func scanSharedMount(row interface{ Scan(...any) error }) (*SharedMount, error) {
 	var m SharedMount
-	if err := row.Scan(&m.Name, &m.MountPath, &m.ReadOnly, &m.ClaimName, &m.Enabled,
+	var aliasRaw []byte
+	if err := row.Scan(&m.Name, &m.MountPath, &aliasRaw, &m.ReadOnly, &m.ClaimName, &m.Enabled,
 		&m.CreatedAt, &m.UpdatedAt, &m.CreatedBy, &m.UpdatedBy); err != nil {
 		return nil, err
 	}
 	m.CreatedAt = m.CreatedAt.UTC()
 	m.UpdatedAt = m.UpdatedAt.UTC()
+	// alias_paths jsonb：缺列（DEFAULT '[]'）与空数组都归一为 nil，避免 API 回 null/[] 摇摆。
+	if len(aliasRaw) > 0 {
+		_ = json.Unmarshal(aliasRaw, &m.AliasPaths)
+	}
+	if len(m.AliasPaths) == 0 {
+		m.AliasPaths = nil
+	}
 	return &m, nil
 }
 
@@ -87,18 +98,23 @@ func (r *SharedMountRepo) Get(ctx context.Context, tx pgx.Tx, name string) (*Sha
 // mount_path 的唯一约束在这里翻译成 domain.ErrConflict。
 func (r *SharedMountRepo) Upsert(ctx context.Context, tx pgx.Tx, m *SharedMount) error {
 	now := r.s.now()
-	_, err := r.s.db(tx).Exec(ctx, `
-		INSERT INTO shared_mounts (name, mount_path, read_only, claim_name, enabled,
+	aliasJSON, err := json.Marshal(normalizeAliasPaths(m.AliasPaths))
+	if err != nil {
+		return fmt.Errorf("store: marshal alias_paths %s: %w", m.Name, err)
+	}
+	_, err = r.s.db(tx).Exec(ctx, `
+		INSERT INTO shared_mounts (name, mount_path, alias_paths, read_only, claim_name, enabled,
 		                           created_at, updated_at, created_by, updated_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $7)
+		VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $7, $8, $8)
 		ON CONFLICT (name) DO UPDATE
 		   SET mount_path = EXCLUDED.mount_path,
+		       alias_paths = EXCLUDED.alias_paths,
 		       read_only  = EXCLUDED.read_only,
 		       claim_name = EXCLUDED.claim_name,
 		       enabled    = EXCLUDED.enabled,
 		       updated_at = EXCLUDED.updated_at,
 		       updated_by = EXCLUDED.updated_by`,
-		m.Name, m.MountPath, m.ReadOnly, m.ClaimName, m.Enabled, now, m.UpdatedBy)
+		m.Name, m.MountPath, string(aliasJSON), m.ReadOnly, m.ClaimName, m.Enabled, now, m.UpdatedBy)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("store: shared mount path %s: %w", m.MountPath, domain.ErrConflict)
@@ -107,6 +123,20 @@ func (r *SharedMountRepo) Upsert(ctx context.Context, tx pgx.Tx, m *SharedMount)
 	}
 	m.UpdatedAt = now
 	return nil
+}
+
+// normalizeAliasPaths 把空别名列表归一为 nil（写库统一为 []，读库统一为 nil，不摇摆）。
+func normalizeAliasPaths(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return []string{}
+	}
+	return out
 }
 
 // Delete 删除一行；不存在返回 domain.ErrNotFound。
@@ -148,7 +178,8 @@ func (r *SharedMountRepo) SeedIfEmpty(ctx context.Context, seeds []domain.Shared
 		}
 		for _, seed := range seeds {
 			m := &SharedMount{
-				Name: seed.Name, MountPath: seed.MountPath, ReadOnly: seed.ReadOnly,
+				Name: seed.Name, MountPath: seed.MountPath, AliasPaths: seed.AliasPaths,
+				ReadOnly:  seed.ReadOnly,
 				ClaimName: seed.ClaimName, Enabled: true,
 				CreatedBy: "system:seed", UpdatedBy: "system:seed",
 			}
@@ -174,10 +205,11 @@ func (r *SharedMountRepo) EffectiveSpecs(ctx context.Context, tx pgx.Tx) ([]doma
 	out := make([]domain.SharedMountSpec, 0, len(rows))
 	for i := range rows {
 		out = append(out, domain.SharedMountSpec{
-			Name:      rows[i].Name,
-			MountPath: rows[i].MountPath,
-			ReadOnly:  rows[i].ReadOnly,
-			ClaimName: rows[i].ClaimName,
+			Name:       rows[i].Name,
+			MountPath:  rows[i].MountPath,
+			AliasPaths: rows[i].AliasPaths,
+			ReadOnly:   rows[i].ReadOnly,
+			ClaimName:  rows[i].ClaimName,
 		})
 	}
 	return out, nil

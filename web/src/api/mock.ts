@@ -59,6 +59,7 @@ import type {
   SharedMountPatch,
   SharedMountWrite,
   ManifestSnapshot,
+  ModelListing,
   SubmitResult,
   Task,
   TaskDetail,
@@ -2566,6 +2567,7 @@ export const mockApi: Api = {
     const mount: SharedMount = {
       name: body.name.trim(),
       mount_path: body.mount_path.trim(),
+      alias_paths: (body.alias_paths ?? []).map((p) => p.trim()).filter(Boolean),
       claim_name: body.claim_name.trim(),
       read_only: body.read_only ?? true,
       enabled: body.enabled ?? true,
@@ -2583,6 +2585,7 @@ export const mockApi: Api = {
     const merged: SharedMountWrite = {
       name,
       mount_path: body.mount_path ?? current.mount_path,
+      alias_paths: body.alias_paths ?? current.alias_paths,
       claim_name: body.claim_name ?? current.claim_name,
       read_only: body.read_only ?? current.read_only,
       enabled: body.enabled ?? current.enabled,
@@ -2592,6 +2595,7 @@ export const mockApi: Api = {
     if (issues.length > 0) throw sharedMountValidation(issues)
     Object.assign(current, {
       mount_path: merged.mount_path.trim(),
+      alias_paths: (merged.alias_paths ?? []).map((p) => p.trim()).filter(Boolean),
       claim_name: merged.claim_name.trim(),
       read_only: merged.read_only ?? current.read_only,
       enabled: merged.enabled ?? current.enabled,
@@ -2606,6 +2610,15 @@ export const mockApi: Api = {
     // 重复删 404（契约）
     if (index < 0) notFound(`共享挂载 ${name}`)
     state.sharedMounts.splice(index, 1)
+  },
+
+  /**
+   * `GET /models?profile=`：mock 模式没有真集群，永远 available:false——
+   * 提交页据此渲染手输框（下拉框只在真环境探针可用时出现）。
+   */
+  async listModels(profile: string): Promise<ModelListing> {
+    await delay(120)
+    return { available: false, reason: 'probe_unavailable', message: 'mock 模式没有集群探针', profile }
   },
 
   async listAdminClusters(): Promise<AdminCluster[]> {

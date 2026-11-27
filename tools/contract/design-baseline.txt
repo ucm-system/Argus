@@ -5,6 +5,8 @@
 #
 # v2 波次更新（2026-11-10）：07-api.md 已升 v2（/tasks、/runners、attempt 级端点），
 # 59 个设计端点全部在 openapi 实现，allow-missing 白名单保持为空。
+# 2026-11-27：+2（GET /admin/clusters、GET /models?profile=，均已在 openapi 实现），
+# 白名单保持为空。
 
-design_endpoints=59
-sha256=3bdd7ea07a377b17b3dc3bc4e69f061f9365ef11c6e6e59c7edcc2895051f389
+design_endpoints=61
+sha256=52597dc0ba247f02952453751feb34f54bf8e03bec80a0d6f593107669a304c3

@@ -57,7 +57,68 @@ func TestNormalizeSharedMounts(t *testing.T) {
 	})
 }
 
-// #74：保留路径只有一套（registry / executor 渲染 / 提交期共用 domain 的常量）。
+// alias_paths（一卷多挂载点，D-63）：别名与 mount_path 同规则、全局唯一、计入保留集合。
+func TestNormalizeSharedMounts_AliasPaths(t *testing.T) {
+	t.Run("合法别名归一", func(t *testing.T) {
+		out, err := NormalizeSharedMounts([]SharedMountSpec{
+			{Name: "models", MountPath: "/models", AliasPaths: []string{"/mnt/model/", "/mnt/weights"}, ClaimName: "c1"},
+		})
+		if err != nil {
+			t.Fatalf("NormalizeSharedMounts: %v", err)
+		}
+		if got := out[0].AliasPaths; len(got) != 2 || got[0] != "/mnt/model" || got[1] != "/mnt/weights" {
+			t.Errorf("aliasPaths = %v, want [/mnt/model /mnt/weights]（尾部斜杠归一）", got)
+		}
+	})
+	t.Run("相对路径拒绝", func(t *testing.T) {
+		if _, err := NormalizeSharedMounts([]SharedMountSpec{
+			{MountPath: "/models", AliasPaths: []string{"mnt/model"}, ClaimName: "c"},
+		}); err == nil {
+			t.Fatal("相对别名应被拒绝")
+		}
+	})
+	t.Run("与自身 mountPath 重复拒绝", func(t *testing.T) {
+		if _, err := NormalizeSharedMounts([]SharedMountSpec{
+			{MountPath: "/models", AliasPaths: []string{"/models"}, ClaimName: "c"},
+		}); err == nil {
+			t.Fatal("别名与 mountPath 重复应被拒绝")
+		}
+	})
+	t.Run("别名撞保留路径拒绝", func(t *testing.T) {
+		if _, err := NormalizeSharedMounts([]SharedMountSpec{
+			{MountPath: "/models", AliasPaths: []string{TmpPath}, ClaimName: "c"},
+		}); err == nil {
+			t.Fatal("别名占用 /tmp 应被拒绝")
+		}
+	})
+	t.Run("跨条目重复拒绝（别名 vs mountPath / 别名 vs 别名）", func(t *testing.T) {
+		if _, err := NormalizeSharedMounts([]SharedMountSpec{
+			{MountPath: "/models", AliasPaths: []string{"/mnt/model"}, ClaimName: "c"},
+			{MountPath: "/mnt/model", ClaimName: "c"},
+		}); err == nil {
+			t.Fatal("第二条的 mountPath 撞第一条别名应被拒绝")
+		}
+		if _, err := NormalizeSharedMounts([]SharedMountSpec{
+			{MountPath: "/models", AliasPaths: []string{"/mnt/model"}, ClaimName: "c"},
+			{MountPath: "/data", AliasPaths: []string{"/mnt/model"}, ClaimName: "c"},
+		}); err == nil {
+			t.Fatal("跨条目别名重复应被拒绝")
+		}
+	})
+	t.Run("别名计入保留集合", func(t *testing.T) {
+		shared := []SharedMountSpec{{Name: "models", MountPath: "/models", AliasPaths: []string{"/mnt/model"}, ClaimName: "c"}}
+		reserved := ReservedMountPaths(shared)
+		if _, ok := reserved["/mnt/model"]; !ok {
+			t.Fatal("别名应进入保留集合（Runner mounts 撞别名也要 400）")
+		}
+		conflicts := MountPathConflicts([]MountSpec{{Name: "m", MountPath: "/mnt/model"}}, shared)
+		if len(conflicts) == 0 {
+			t.Fatal("Runner mounts 撞别名应报冲突")
+		}
+	})
+}
+
+// #74：保留路径只有一套（registry / executor 渲染 / 提交期共用 domain 的常量集）。
 func TestReservedMountPathsSingleSource(t *testing.T) {
 	shared := []SharedMountSpec{{Name: "models", MountPath: "/models", ClaimName: "c"}}
 	reserved := ReservedMountPaths(shared)

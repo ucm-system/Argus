@@ -629,6 +629,8 @@ func buildMounts(spec ports.JobSpec, inputSub, outputSub string) ([]corev1.Volum
 
 	// 统一共享挂载（D-63）：平台级注入，Profile 关闭时不注入。
 	// 用 PVC source（内联 nfs 会被 restricted PSA 拒绝），平台不理解 NFS 协议（§10.4）。
+	// aliasPaths 是同一卷的 Pod 内别名挂载点：同一条 volume 生成多条 volumeMount
+	//（一卷多挂载点），不是多条 volume —— 部分存储后端（NFS）同一卷不允许挂两次。
 	shared := spec.SharedMounts
 	if spec.SharedMountsDisabled {
 		shared = nil
@@ -640,8 +642,16 @@ func buildMounts(spec ports.JobSpec, inputSub, outputSub string) ([]corev1.Volum
 		if sm.ClaimName == "" {
 			return nil, nil, fmt.Errorf("%w: sharedMounts[%d].claimName is empty", ErrSpecInvalid, i)
 		}
+		for j, alias := range sm.AliasPaths {
+			if !path.IsAbs(alias) {
+				return nil, nil, fmt.Errorf("%w: sharedMounts[%d].aliasPaths[%d] must be absolute", ErrSpecInvalid, i, j)
+			}
+		}
 		name := uniqueVolumeName(sm.Name)
 		mounts = append(mounts, corev1.VolumeMount{Name: name, MountPath: sm.MountPath, ReadOnly: sm.ReadOnly})
+		for _, alias := range sm.AliasPaths {
+			mounts = append(mounts, corev1.VolumeMount{Name: name, MountPath: alias, ReadOnly: sm.ReadOnly})
+		}
 		volumes = append(volumes, corev1.Volume{
 			Name: name,
 			VolumeSource: corev1.VolumeSource{

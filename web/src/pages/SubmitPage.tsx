@@ -4,7 +4,7 @@ import { AlignLeft, CheckCircle2, Circle, Link2, ListChecks, Play, Plus, Server,
 import { parse as parseYaml } from 'yaml'
 import { api, writeBlockedReason } from '@/api'
 import { toApiError } from '@/api/client'
-import type { ApiErrorBody, Runner, RunnerSpec, TaskManifest, ValidationIssue } from '@/api/types'
+import type { ApiErrorBody, ModelListing, Runner, RunnerSpec, TaskManifest, ValidationIssue } from '@/api/types'
 import { RunnerDrawer } from '@/components/app/RunnerDrawer'
 import { Badge, Tag } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ import { FormErrorSummary } from '@/components/app/FormErrorSummary'
 import { PageHeader } from '@/components/app/PageHeader'
 import { useToast } from '@/components/ui/toast'
 import { useAsync } from '@/hooks/useAsync'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useIdentity } from '@/hooks/useIdentity'
 import { inputFormatLabel } from '@/lib/runner-format'
 import { validateJsonlInput, validateYamlInput, formatJsonl, type InputIssue } from '@/lib/input-validate'
@@ -134,6 +135,13 @@ export function SubmitPage() {
   const [serviceUrl, setServiceUrl] = useState('')
   const [modelName, setModelName] = useState('')
   const [modelPath, setModelPath] = useState('')
+  /**
+   * 模型路径下拉框（GET /models，2026-11-27）：/models 共享挂载下已有哪些模型。
+   * `available:false`（没有挂载点 / 探针失败）不是错误——不渲染下拉框，保留手输框。
+   */
+  const [modelListing, setModelListing] = useState<ModelListing | null>(null)
+  /** 用户显式选了「手动输入…」后不再弹下拉（点了「从列表选择」才回来）。 */
+  const [manualPathMode, setManualPathMode] = useState(false)
   const [precheck, setPrecheck] = useState<PrecheckMode>('auto')
   /** 执行环境 profile：RunnerSpec.execution.profile 必填；MVP 没有 /profiles 端点，给可编辑默认值 */
   const [profile, setProfile] = useState('k8s-npu')
@@ -211,6 +219,39 @@ export function SubmitPage() {
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryId, runners.loading])
+
+  /**
+   * 模型列表（GET /models）：只在「已有服务」（外接）模式拉取；profile 变更后防抖重拉。
+   * 探针按 profile.namespace 定位 PVC，`available:false`（没有挂载点/探针失败）不是错误——
+   * 下拉框不渲染，保留手输框。
+   */
+  const serviceMode = deployRunnerName === ''
+  const debouncedProfile = useDebouncedValue(profile.trim(), 400)
+  useEffect(() => {
+    if (!serviceMode || !debouncedProfile) {
+      setModelListing(null)
+      return
+    }
+    let alive = true
+    api
+      .listModels(debouncedProfile)
+      .then((listing) => {
+        if (alive) setModelListing(listing)
+      })
+      .catch(() => {
+        if (alive) setModelListing(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [serviceMode, debouncedProfile])
+
+  /** 有可选模型且当前值能对上列表（或为空）才渲染下拉；手输模式/取不到列表时回退 Input。 */
+  const modelOptions = modelListing?.available ? (modelListing.models ?? []) : []
+  const modelMountPath = modelListing?.mount_path ?? ''
+  const modelOptionValues = modelOptions.map((m) => `${modelMountPath}/${m}`)
+  const showModelSelect =
+    !manualPathMode && modelOptions.length > 0 && (modelPath === '' || modelOptionValues.includes(modelPath))
 
   /**
    * 右栏说明针对**当前 runner**：点 runner 卡片 / 选 Runner / 添加 runner 都会把它设为当前。
@@ -884,8 +925,70 @@ export function SubmitPage() {
                 <Field label="模型名">
                   <Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="Qwen3-32B" />
                 </Field>
-                <Field label="模型路径（可选）" className="sm:col-span-3">
-                  <Input value={modelPath} onChange={(e) => setModelPath(e.target.value)} placeholder="/models/Qwen3-32B" />
+                <Field
+                  label="模型路径（可选）"
+                  className="sm:col-span-3"
+                  hint={
+                    showModelSelect
+                      ? `来自 ${modelMountPath} 挂载（探针 5 分钟缓存）；没有合适的也可以手动输入`
+                      : undefined
+                  }
+                >
+                  {showModelSelect ? (
+                    <div className="flex items-center gap-2">
+                      <Select
+                        aria-label="选择 /models 下的模型"
+                        data-testid="model-path-select"
+                        value={modelOptionValues.includes(modelPath) ? modelPath : ''}
+                        onChange={(e) => {
+                          const value = e.target.value
+                          if (value === '__manual__') {
+                            setManualPathMode(true)
+                            return
+                          }
+                          setModelPath(value)
+                        }}
+                      >
+                        <option value="">选择已有模型…</option>
+                        {modelOptions.map((m) => (
+                          <option key={m} value={`${modelMountPath}/${m}`}>
+                            {m}
+                          </option>
+                        ))}
+                        <option value="__manual__">手动输入…</option>
+                      </Select>
+                      {modelPath ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          data-testid="model-path-clear"
+                          aria-label="清空模型路径"
+                          onClick={() => setModelPath('')}
+                        >
+                          清空
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={modelPath}
+                        onChange={(e) => setModelPath(e.target.value)}
+                        placeholder="/models/Qwen3-32B"
+                        aria-label="模型路径"
+                      />
+                      {modelOptions.length > 0 ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          data-testid="model-path-back-to-list"
+                          onClick={() => setManualPathMode(false)}
+                        >
+                          从列表选择
+                        </Button>
+                      ) : null}
+                    </div>
+                  )}
                 </Field>
                 </div>
               </div>

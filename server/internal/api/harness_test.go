@@ -42,6 +42,18 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	return newAdminTestEnvFor(t, "api")
 }
 
+// newAdminTestEnvWith 在标准环境之上追加 Deps 注入（模型探针等可选依赖的 IT 用例）。
+func newAdminTestEnvWith(t *testing.T, mutate func(*Deps)) *adminTestEnv {
+	t.Helper()
+	e := newAdminTestEnvFor(t, "api")
+	if mutate != nil {
+		deps := Deps{Config: e.cfg, Store: e.st, Machines: store.NewMachines(e.st, nil), Catalog: itTestCatalog()}
+		mutate(&deps)
+		e.srv = New(deps)
+	}
+	return e
+}
+
 // newAdminTestEnvFor 建在独立测试库上（purpose 派生库名）。
 func newAdminTestEnvFor(t *testing.T, purpose string) *adminTestEnv {
 	t.Helper()

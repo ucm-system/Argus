@@ -144,6 +144,75 @@ func TestAdminSharedMounts_Validation(t *testing.T) {
 	}
 }
 
+// TestAdminSharedMounts_AliasPaths 覆盖别名字段（D-63 一卷多挂载点）：
+// CRUD 往返、省略=保留旧值、显式 []=清空、跨行冲突 400。
+func TestAdminSharedMounts_AliasPaths(t *testing.T) {
+	e := newAdminTestEnv(t)
+	name := uniqueAdminName("sma")
+
+	// 1) 新建带别名（尾部斜杠归一）。
+	rec := e.do(http.MethodPost, "/api/v1/admin/shared-mounts",
+		`{"name":"`+name+`","mount_path":"/alias-m-`+name+`","alias_paths":["/mnt/`+name+`/","/mnt/w-`+name+`"],"claim_name":"weights-pvc"}`, "admin")
+	created := requireStatus(t, rec, http.StatusCreated)
+	alias, _ := created["alias_paths"].([]any)
+	if len(alias) != 2 || alias[0] != "/mnt/"+name {
+		t.Fatalf("alias_paths = %v, want 归一化后的两个别名", alias)
+	}
+
+	// 2) PUT 省略 alias_paths = 保留旧值。
+	rec = e.do(http.MethodPut, "/api/v1/admin/shared-mounts/"+name, `{"enabled":false}`, "admin")
+	updated := requireStatus(t, rec, http.StatusOK)
+	if alias, _ := updated["alias_paths"].([]any); len(alias) != 2 {
+		t.Fatalf("省略 alias_paths 应保留旧值: %v", updated["alias_paths"])
+	}
+
+	// 3) PUT 显式 [] = 清空。
+	rec = e.do(http.MethodPut, "/api/v1/admin/shared-mounts/"+name, `{"alias_paths":[]}`, "admin")
+	updated = requireStatus(t, rec, http.StatusOK)
+	if alias, _ := updated["alias_paths"].([]any); len(alias) != 0 {
+		t.Fatalf("显式 [] 应清空: %v", updated["alias_paths"])
+	}
+
+	// 4) 跨行冲突：A 的别名撞 B 的 mount_path / 别名 → 400 CONFLICT。
+	other := uniqueAdminName("smb")
+	rec = e.do(http.MethodPost, "/api/v1/admin/shared-mounts",
+		`{"name":"`+other+`","mount_path":"/b-`+other+`","alias_paths":["/bx-`+other+`"],"claim_name":"pvc-b"}`, "admin")
+	requireStatus(t, rec, http.StatusCreated)
+	for _, tc := range []struct{ label, body, field string }{
+		{"别名撞其它行 mount_path", `{"name":"c1-` + other + `","mount_path":"/c1-` + other + `","alias_paths":["/b-` + other + `"],"claim_name":"pvc"}`, "alias_paths[0]"},
+		{"别名撞其它行别名", `{"name":"c2-` + other + `","mount_path":"/c2-` + other + `","alias_paths":["/bx-` + other + `"],"claim_name":"pvc"}`, "alias_paths[0]"},
+		{"mount_path 撞其它行别名", `{"name":"c3-` + other + `","mount_path":"/bx-` + other + `","claim_name":"pvc"}`, "mount_path"},
+	} {
+		rec := e.do(http.MethodPost, "/api/v1/admin/shared-mounts", tc.body, "admin")
+		body := requireError(t, rec, http.StatusBadRequest, "VALIDATION_ERROR")
+		issues, _ := detailOf(t, body)["issues"].([]any)
+		hit := false
+		for _, it := range issues {
+			m, _ := it.(map[string]any)
+			if m["path"] == tc.field && m["code"] == "CONFLICT" {
+				hit = true
+			}
+		}
+		if !hit {
+			t.Fatalf("%s: issues 里没有 %s+CONFLICT: %v", tc.label, tc.field, issues)
+		}
+	}
+
+	// 5) 自身校验：别名相对路径 / 撞保留路径 / 等于自身 mount_path。
+	for _, tc := range []struct{ label, body, field string }{
+		{"相对路径", `{"name":"av1-` + other + `","mount_path":"/av1-` + other + `","alias_paths":["mnt/x"],"claim_name":"pvc"}`, "alias_paths[0]"},
+		{"撞保留路径", `{"name":"av2-` + other + `","mount_path":"/av2-` + other + `","alias_paths":["/tmp"],"claim_name":"pvc"}`, "alias_paths[0]"},
+		{"等于自身 mount_path", `{"name":"av3-` + other + `","mount_path":"/av3-` + other + `","alias_paths":["/av3-` + other + `"],"claim_name":"pvc"}`, "alias_paths[0]"},
+	} {
+		rec := e.do(http.MethodPost, "/api/v1/admin/shared-mounts", tc.body, "admin")
+		body := requireError(t, rec, http.StatusBadRequest, "VALIDATION_ERROR")
+		issues, _ := detailOf(t, body)["issues"].([]any)
+		if len(issues) == 0 {
+			t.Fatalf("%s: 400 但没有 issues: %v", tc.label, body)
+		}
+	}
+}
+
 // TestSharedMounts_EffectiveForRendering 验证"管理面写入 → 渲染来源立即变化"
 // 以及"删除后不再注入"（D-65 的核心行为，走 api 的运行时来源）。
 func TestSharedMounts_EffectiveForRendering(t *testing.T) {

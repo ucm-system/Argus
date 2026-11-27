@@ -123,6 +123,13 @@ type Config struct {
 	// VolcanoTTL 是快照缓存 TTL（AG_VOLCANO_TTL，默认 15s）。
 	VolcanoTTL time.Duration
 
+	// ---- 模型目录探针（GET /models 的数据来源） ----
+	// ModelProbeImage 是探针 Job 的镜像（AG_MODEL_PROBE_IMAGE，默认 alpine:3.20；
+	// 离线集群把镜像预载进节点或指到私有仓库）。
+	ModelProbeImage string
+	// ModelProbeTTL 是目录列表缓存 TTL（AG_MODEL_PROBE_TTL，默认 5m；模型目录很少变化）。
+	ModelProbeTTL time.Duration
+
 	// ---- 以下为实现细节配置，默认值即设计值 ----
 
 	// DBMaxConns 是连接池上限（AG_DB_MAX_OPEN_CONNS，默认 20）。
@@ -217,6 +224,14 @@ func Load() (*Config, error) {
 		return nil, smErr
 	}
 	c.SharedMounts = shared
+
+	// 模型目录探针（GET /models）：镜像与缓存 TTL。
+	c.ModelProbeImage = env("AG_MODEL_PROBE_IMAGE", "alpine:3.20")
+	if probeTTL, probeErr := envDuration("AG_MODEL_PROBE_TTL", "", 5*time.Minute); probeErr != nil {
+		return nil, probeErr
+	} else {
+		c.ModelProbeTTL = probeTTL
+	}
 
 	if raw := env("AG_SESSION_TTL", ""); raw != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -575,21 +590,21 @@ func envBool(name string, def bool) bool {
 //
 // 形态：
 //
-//	[{"name":"models","mountPath":"/models","readOnly":true,"claimName":"argus-models"},
-//	 {"name":"model-alt","mountPath":"/mnt/model","claimName":"argus-models"}]
+//	[{"name":"models","mountPath":"/models","aliasPaths":["/mnt/model"],"readOnly":true,"claimName":"argus-models"}]
 //
-// 规则：claimName 必填；mountPath 绝对且不与平台保留路径冲突；name 唯一；readOnly **默认 true**
-// （只有显式写 false 才可写）。空/`[]` 表示不注入。
+// 规则：claimName 必填；mountPath / aliasPaths 绝对且不与平台保留路径冲突、全局唯一；
+// name 唯一；readOnly **默认 true**（只有显式写 false 才可写）。空/`[]` 表示不注入。
 func ParseSharedMounts(raw string) ([]domain.SharedMountSpec, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "[]" {
 		return nil, nil
 	}
 	var items []struct {
-		Name      string `json:"name"`
-		MountPath string `json:"mountPath"`
-		ReadOnly  *bool  `json:"readOnly"` // 指针：区分"未写（默认 true）"与"显式 false"
-		ClaimName string `json:"claimName"`
+		Name       string   `json:"name"`
+		MountPath  string   `json:"mountPath"`
+		AliasPaths []string `json:"aliasPaths"` // 同一卷的 Pod 内别名挂载点（D-63：一卷多挂载点）
+		ReadOnly   *bool    `json:"readOnly"`   // 指针：区分"未写（默认 true）"与"显式 false"
+		ClaimName  string   `json:"claimName"`
 	}
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil, fmt.Errorf("config: AG_SHARED_MOUNTS 不是合法 JSON 数组: %w", err)
@@ -601,7 +616,8 @@ func ParseSharedMounts(raw string) ([]domain.SharedMountSpec, error) {
 			ro = *it.ReadOnly
 		}
 		out = append(out, domain.SharedMountSpec{
-			Name: it.Name, MountPath: it.MountPath, ReadOnly: ro, ClaimName: it.ClaimName,
+			Name: it.Name, MountPath: it.MountPath, AliasPaths: it.AliasPaths,
+			ReadOnly: ro, ClaimName: it.ClaimName,
 		})
 	}
 	normalized, err := domain.NormalizeSharedMounts(out)

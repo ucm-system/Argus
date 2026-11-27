@@ -552,8 +552,19 @@ const EMPTY_MOUNT: SharedMountWrite = {
   name: '',
   mount_path: '',
   claim_name: '',
+  alias_paths: [],
   read_only: true,
   enabled: true,
+}
+
+/** 把输入框里的逗号分隔别名拆成数组（去空、去重、保留原样——归一化归后端）。 */
+function parseAliasPaths(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const part of raw.split(',')) {
+    const p = part.trim()
+    if (p && !seen.has(p)) seen.add(p)
+  }
+  return [...seen]
 }
 
 /** 前端校验：与后端同一套规则（必填 / 绝对路径 / 保留路径），返回 path → message */
@@ -566,6 +577,17 @@ function validateMount(draft: SharedMountWrite): Record<string, string> {
   else if (!path.startsWith('/')) errors.mount_path = '路径必须以 / 开头（容器内绝对路径）'
   else if (RESERVED_MOUNT_PATHS.some((reserved) => path === reserved || path.startsWith(`${reserved}/`)))
     errors.mount_path = `路径命中平台保留路径（${RESERVED_MOUNT_PATHS.join(', ')}），请换一个`
+  const aliases = draft.alias_paths ?? []
+  const seen = new Set<string>([path])
+  aliases.forEach((alias, index) => {
+    const field = `alias_paths[${index}]`
+    if (!alias.trim()) errors[field] = '别名不能为空（要清空请删掉这一行）'
+    else if (!alias.startsWith('/')) errors[field] = '别名必须以 / 开头（容器内绝对路径）'
+    else if (RESERVED_MOUNT_PATHS.some((reserved) => alias === reserved || alias.startsWith(`${reserved}/`)))
+      errors[field] = '别名命中平台保留路径，请换一个'
+    else if (seen.has(alias)) errors[field] = '别名与其他路径重复'
+    else seen.add(alias)
+  })
   if (!draft.claim_name.trim()) errors.claim_name = 'PVC 名必填'
   return errors
 }
@@ -599,6 +621,7 @@ function MountsTab() {
       name: mount.name,
       mount_path: mount.mount_path,
       claim_name: mount.claim_name,
+      alias_paths: mount.alias_paths ?? [],
       read_only: mount.read_only,
       enabled: mount.enabled,
     })
@@ -633,6 +656,7 @@ function MountsTab() {
         const patch: SharedMountPatch = {
           mount_path: draft.mount_path,
           claim_name: draft.claim_name,
+          alias_paths: draft.alias_paths ?? [],
           read_only: draft.read_only,
           enabled: draft.enabled,
         }
@@ -737,6 +761,12 @@ function MountsTab() {
             volumes[].persistentVolumeClaim，挂进所有 runner Job（含 pre_check）。
             改完保存就生效，不需要重启，也不用 helm upgrade。
           </p>
+          <p className="leading-relaxed text-fg-2">
+            想让同一个 PVC 出现在多个路径（如 /models 和 /mnt/model）？用「别名路径」——
+            一条挂载点记录里填 alias_paths，渲染成同一条 volume 的多个挂载。
+            <span className="text-fg">不要建两条记录指向同一个 PVC</span>：部分存储后端（NFS）
+            同一卷挂两次会让 Pod 一直卡在 ContainerCreating。
+          </p>
           <pre
             data-testid="pv-pvc-yaml"
             className="max-h-72 overflow-auto rounded-lg border border-line bg-surface-2 p-3 font-mono text-2xs leading-relaxed text-fg-2"
@@ -812,7 +842,15 @@ function MountsTab() {
                       </label>
                     </TD>
                     <TD className="font-mono text-2xs text-fg">{mount.name}</TD>
-                    <TD className="font-mono text-2xs text-fg-2">{mount.mount_path}</TD>
+                    <TD className="font-mono text-2xs text-fg-2">
+                      {mount.mount_path}
+                      {(mount.alias_paths ?? []).length > 0 ? (
+                        <span className="text-fg-3">
+                          {' '}
+                          → {(mount.alias_paths ?? []).map((alias) => <span key={alias} className="mr-1">{alias}</span>)}
+                        </span>
+                      ) : null}
+                    </TD>
                     <TD className="text-2xs">{mount.read_only ? '只读' : '读写'}</TD>
                     <TD className="font-mono text-2xs text-fg-2">{mount.claim_name}</TD>
                     <TD className="whitespace-nowrap text-2xs text-fg-3">
@@ -896,6 +934,19 @@ function MountsTab() {
                 data-testid="mount-path"
                 placeholder="/models"
                 onChange={(event) => setDraft({ ...draft, mount_path: event.target.value })}
+              />
+            </Field>
+            <Field
+              label="别名路径（可选）"
+              error={fieldErrors['alias_paths[0]'] ?? fieldErrors['alias_paths[1]'] ?? fieldErrors['alias_paths[2]']}
+              hint="同一 PVC 的 Pod 内其他挂载点（一卷多挂载点），逗号分隔，如 /mnt/model"
+            >
+              <Input
+                value={(draft.alias_paths ?? []).join(', ')}
+                aria-label="别名路径"
+                data-testid="mount-aliases"
+                placeholder="/mnt/model"
+                onChange={(event) => setDraft({ ...draft, alias_paths: parseAliasPaths(event.target.value) })}
               />
             </Field>
             <Field label="PVC 名" required error={fieldErrors.claim_name} hint="集群里已存在的 PVC；不要填 NFS 地址">
