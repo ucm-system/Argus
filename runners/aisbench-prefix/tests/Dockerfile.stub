@@ -26,7 +26,7 @@ RUN groupadd -g ${RUNNER_GID} runner \
  && mkdir -p /runner /workspace/output /tmp/prefix-ws /tmp/prefix-state \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner /workspace /tmp
 
-COPY run.sh summarize.py /runner/
+COPY run.sh summarize.py report.py /runner/
 COPY tool /runner/tool
 COPY tests /runner/tests
 COPY tests/fixtures /runner/fixtures

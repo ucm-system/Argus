@@ -68,7 +68,7 @@ RUN groupadd -g ${RUNNER_GID} runner \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner /models /workspace /tmp/prefix-ws /tmp/prefix-state
 
 # ---- 执行入口与产物汇总（本仓库自有代码）--------------------------------------
-COPY run.sh summarize.py /runner/
+COPY run.sh summarize.py report.py /runner/
 
 # ---- vendored 工具（只读副本；含题库 GSM8K.jsonl；本地改动见 tool/VENDORED.md）--
 COPY tool /runner/tool
@@ -78,7 +78,7 @@ COPY tests/fixtures /runner/fixtures
 
 # CRLF 归一到 LF：Windows 检出时 *.py / *.sh 可能带 CRLF，带 CRLF 的 shebang 在
 # Linux 里会报 `/usr/bin/env: 'python3\r'`。在镜像里擦一遍比要求人人配 .gitattributes 稳。
-RUN sed -i 's/\r$//' /runner/run.sh /runner/summarize.py \
+RUN sed -i 's/\r$//' /runner/run.sh /runner/summarize.py /runner/report.py \
  && find /runner/tool /runner/fixtures -type f -exec sed -i 's/\r$//' {} + \
  && chmod 0755 /runner/run.sh \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner
