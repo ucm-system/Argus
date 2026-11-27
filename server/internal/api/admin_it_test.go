@@ -320,6 +320,38 @@ func TestAdminClusters_CRUD(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, domain.CodeValidationError)
 }
 
+// TestAdminClusters_ListAdmin 覆盖 GET /admin/clusters（管理台 Clusters 标签页的数据源）：
+// admin 能看到 kubeconfig_key（定位文件名，非内容）；viewer 403；RBAC 探针在别处。
+func TestAdminClusters_ListAdmin(t *testing.T) {
+	env := newAdminTestEnv(t)
+	subject := uniqueAdminName("it-admin-cluster-list")
+	name := uniqueAdminName("it-cluster-list")
+
+	rec := env.do(http.MethodPost, "/api/v1/admin/clusters",
+		fmt.Sprintf(`{"name":%q,"api_server":"https://10.0.0.9:6443","kubeconfig_key":%q,"description":"it-list"}`,
+			name, name+".kubeconfig"), subject)
+	requireStatus(t, rec, http.StatusCreated)
+
+	// admin 列表包含 kubeconfig_key（回显文件名；内容永不入库）。
+	rec = env.do(http.MethodGet, "/api/v1/admin/clusters", "", subject)
+	list := requireStatus(t, rec, http.StatusOK)
+	items, _ := list["items"].([]any)
+	found := false
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m["name"] == name {
+			found = true
+			if m["kubeconfig_key"] != name+".kubeconfig" {
+				t.Fatalf("kubeconfig_key = %v, want %s.kubeconfig", m["kubeconfig_key"], name)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("admin 列表缺少 %s", name)
+	}
+	// RBAC（viewer/operator 不可读）在 TestAdminRBAC_NonAdminForbidden 覆盖（dev 模式人人 admin）。
+}
+
 // ============================================================================
 // 审计查询
 // ============================================================================
@@ -516,6 +548,7 @@ func TestAdminRBAC_NonAdminForbidden(t *testing.T) {
 		{http.MethodPut, "/api/v1/admin/profiles", `{"name":"x"}`, operator},
 		{http.MethodDelete, "/api/v1/admin/profiles?name=x", "", operator},
 		{http.MethodPost, "/api/v1/admin/clusters", `{"name":"x","api_server":"https://a:6443","kubeconfig_key":"a"}`, viewer},
+		{http.MethodGet, "/api/v1/admin/clusters", "", operator},
 		{http.MethodGet, "/api/v1/admin/secrets", "", operator},
 		{http.MethodPost, "/api/v1/admin/secrets", `{"name":"x","namespace":"n","secret_name":"s","key":"k"}`, operator},
 		{http.MethodPost, "/api/v1/admin/secrets/x/rotate", "", operator},

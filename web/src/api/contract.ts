@@ -18,6 +18,7 @@ import type {
   LogChunk,
   ManifestSnapshot,
   Meta,
+  ModelListing,
   Page,
   ProfileWrite,
   QueueStatus,
@@ -152,6 +153,10 @@ export interface Api {
   createAdminSharedMount(body: SharedMountWrite): Promise<SharedMount>
   updateAdminSharedMount(name: string, body: SharedMountPatch): Promise<SharedMount>
   deleteAdminSharedMount(name: string): Promise<void>
+
+  /** `GET /models?profile=`：/models 共享挂载下的模型目录名。
+      `available:false` 不是错误（没有挂载点 / 探针失败），前端回退手输框。 */
+  listModels(profile: string): Promise<ModelListing>
 
   /* 管理（P1，仅 admin） */
   listAdminClusters(): Promise<AdminCluster[]>

@@ -76,6 +76,56 @@ func TestRenderSharedMountsDisabledByProfile(t *testing.T) {
 	}
 }
 
+// alias_paths（一卷多挂载点）：同一条 volume 渲染多条 volumeMount —— 不是多条 volume
+// （部分存储后端（NFS）同一卷挂两次会卡 ContainerCreating，2026-11-27 用户实测）。
+func TestRenderSharedMountAliasPaths(t *testing.T) {
+	spec := baseSpec()
+	spec.SharedMounts = []domain.SharedMountSpec{
+		{Name: "models", MountPath: "/models", AliasPaths: []string{"/mnt/model"}, ReadOnly: true, ClaimName: "models-pvc"},
+	}
+	job, err := Render(spec)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	pod := job.Spec.Template.Spec
+	// 同一 claim 只允许一条 volume。
+	claimVolumes := 0
+	volName := ""
+	for _, v := range pod.Volumes {
+		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "models-pvc" {
+			claimVolumes++
+			volName = v.Name
+		}
+	}
+	if claimVolumes != 1 {
+		t.Fatalf("claim models-pvc 的 volume 数 = %d, want 1（一卷多挂载点）", claimVolumes)
+	}
+	// 主路径 + 别名共用同一卷名，各挂载一次。
+	mounts := map[string]bool{}
+	for _, m := range pod.Containers[0].VolumeMounts {
+		if m.Name == volName {
+			mounts[m.MountPath] = true
+		}
+	}
+	for _, want := range []string{"/models", "/mnt/model"} {
+		if !mounts[want] {
+			t.Errorf("volume %q 没有挂到 %s: %+v", volName, want, pod.Containers[0].VolumeMounts)
+		}
+	}
+}
+
+// 别名与 Runner mounts 撞路径 → 渲染期拒绝（别名计入保留集合）。
+func TestRenderRejectsRunnerMountOnAlias(t *testing.T) {
+	spec := baseSpec()
+	spec.SharedMounts = []domain.SharedMountSpec{
+		{Name: "models", MountPath: "/models", AliasPaths: []string{"/mnt/model"}, ClaimName: "m"},
+	}
+	spec.Mounts = []domain.MountSpec{{Name: "mine", MountPath: "/mnt/model"}}
+	if _, err := Render(spec); err == nil {
+		t.Fatal("Runner mounts 撞别名应被拒绝")
+	}
+}
+
 // 冲突：Runner mounts 与统一挂载同路径 → 渲染期也必须拒绝（双保险）。
 func TestRenderRejectsSharedMountPathConflict(t *testing.T) {
 	spec := baseSpec()

@@ -2111,6 +2111,45 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /api/v1/models:
+    get:
+      operationId: listModels
+      summary: 列出 /models 共享挂载下的已有模型（viewer+）
+      description: |
+        07 §5.3：提交页"模型路径"下拉框的数据源。数据来自挂到 `/models`（或其别名）的
+        统一共享挂载 PVC；平台不登记模型，目录列举用一次性探针 Job 在
+        `profile.namespace` 里现做（RO 挂 claim，读完即删；结果缓存 5m）。
+
+        `available:false` **不是错误**：没有挂载点（`model_dir_not_mounted`）、探针未接线
+        （`probe_unavailable`）或探针失败（`probe_failed`）都返回 200——下拉框是增强，
+        前端拿不到列表就回退手输框，绝不挡提交。
+      tags: [profiles]
+      parameters:
+        - name: profile
+          in: query
+          required: true
+          schema:
+            type: string
+          description: |
+            Execution Profile 名（必填）：`claim_name` 是 namespace 作用域对象，
+            探针要在 runner Job 的同一 namespace（profile.namespace）里跑才能看到同一个 PVC。
+      responses:
+        '200':
+          description: 目录列举结果（available=false 也走 200）
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelListing'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /api/v1/admin/profiles:
     post:
       operationId: createAdminProfile
@@ -2215,6 +2254,30 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   /api/v1/admin/clusters:
+    get:
+      operationId: listAdminClusters
+      summary: 集群登记列表（admin）
+      description: |
+        07 §5.4：管理台 Clusters 标签页的数据源。与 `GET /clusters`（viewer 只读概要）
+        的区别是额外回显 `kubeconfig_key`——admin 可见的凭据**定位文件名**，
+        轮换流程（web-and-delivery §11）要用；凭据内容本身仍然永不出现（06 §4.4）。
+      tags: [admin]
+      responses:
+        '200':
+          description: 集群登记列表
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterAdminList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
     post:
       operationId: createAdminCluster
       summary: 登记集群（admin）
@@ -5027,6 +5090,15 @@ components:
         mount_path:
           type: string
           description: 容器内绝对路径（如 `/models`）；不得命中平台保留路径
+        alias_paths:
+          type: array
+          items:
+            type: string
+          description: |
+            同一卷在 Pod 内的**别名挂载点**（如 `["/mnt/model"]`）：渲染层对同一条
+            volume 生成多条 volumeMount（一卷多挂载点），不是多条 volume——部分存储
+            后端（NFS）同一卷不允许挂两次。别名与 `mount_path` 同 claim、同读写权限，
+            冲突规则（绝对路径、保留路径、全局唯一）与 `mount_path` 一致。
         read_only:
           type: boolean
           description: 默认 `true`（模型权重是只读输入）
@@ -5062,6 +5134,11 @@ components:
           description: volume 名，≤63 字节；PUT 时若给出必须与路径上的 name 一致
         mount_path:
           type: string
+        alias_paths:
+          type: array
+          items:
+            type: string
+          description: 同一卷的 Pod 内别名挂载点（PUT：省略=保留旧值，显式 `[]`=清空）
         read_only:
           type: boolean
         claim_name:
@@ -5556,6 +5633,62 @@ components:
         created_at:
           type: string
           format: date-time
+
+    ClusterAdminList:
+      type: object
+      description: '`GET /admin/clusters` 的列表信封'
+      required: [items, has_more]
+      additionalProperties: true
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterAdmin'
+        next_cursor:
+          type: [string, 'null']
+        has_more:
+          type: boolean
+
+    ModelListing:
+      type: object
+      description: |
+        `GET /models` 的应答：共享挂载 PVC 里 `/models` 目录下的模型目录名。
+        **`available:false` 不是错误**——没有挂载点、探针未接线或探针失败都返回它，
+        前端据此回退为手输框（下拉框是增强，不是依赖）。
+      required: [available]
+      additionalProperties: true
+      properties:
+        available:
+          type: boolean
+          description: '`true` 时 `models` 才有意义；`false` 时看 `reason`'
+        reason:
+          type: string
+          enum: [model_dir_not_mounted, probe_unavailable, probe_failed]
+          description: available=false 时的原因
+        message:
+          type: string
+          description: available=false 时的人类可读说明
+        profile:
+          type: string
+          description: 请求里的 profile 名
+        namespace:
+          type: string
+          description: 探针 Job 运行的 namespace（profile.namespace）
+        claim_name:
+          type: string
+          description: 被列举的 PVC 名
+        mount_path:
+          type: string
+          description: 该挂载点在 runner 容器内的路径（构造 model_path 用）
+        models:
+          type: array
+          items:
+            type: string
+          description: PVC 根目录下的子目录名（一个目录一个模型，约定）
+        probed_at:
+          type: string
+          format: date-time
+          description: 本次探测完成时间（UTC；可能来自 TTL 缓存）
 
     SecretRef:
       type: object

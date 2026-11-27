@@ -354,6 +354,7 @@ CREATE TABLE execution_profiles (
 CREATE TABLE shared_mounts (                                 -- D-65：运行时可管理的平台级统一共享挂载
   name        text PRIMARY KEY,                           -- volume 名（渲染前会 sanitize/去重）
   mount_path  text NOT NULL,                              -- 容器内绝对路径（如 /models）
+  alias_paths jsonb NOT NULL DEFAULT '[]',                -- 同一卷的 Pod 内别名挂载点（如 ["/mnt/model"]，一卷多挂载点）
   read_only   boolean NOT NULL DEFAULT true,              -- 默认只读：模型权重是只读输入
   claim_name  text NOT NULL,                              -- 集群里已存在的 PVC 名（平台不创建 PV/PVC）
   enabled     boolean NOT NULL DEFAULT true,              -- false = 保留记录但不注入
@@ -363,9 +364,16 @@ CREATE TABLE shared_mounts (                                 -- D-65：运行时
   updated_by  text NOT NULL DEFAULT 'system:seed',
   CONSTRAINT shared_mounts_path_uq UNIQUE (mount_path),   -- 同一路径只允许一条（挂两次是配置错误）
   CONSTRAINT shared_mounts_claim_ck CHECK (btrim(claim_name) <> ''),
-  CONSTRAINT shared_mounts_path_ck  CHECK (mount_path LIKE '/%')
+  CONSTRAINT shared_mounts_path_ck  CHECK (mount_path LIKE '/%'),
+  CONSTRAINT shared_mounts_alias_ck CHECK (jsonb_typeof(alias_paths) = 'array')
 );
 CREATE INDEX shared_mounts_enabled_idx ON shared_mounts (enabled) WHERE enabled;  -- 渲染只读启用行
+
+**`alias_paths` 的语义（D-63）**：部分存储后端（NFS）同一卷不允许被挂两次，"一卷多
+挂载点"必须在渲染层表达——同一条 volume 生成多条 volumeMount，而不是多条 volume
+（与 §6.8 output/input 复用同一卷声明的先例一致）。别名与 `mount_path` 同 claim、
+同读写权限；冲突规则（绝对路径、非保留路径、全局唯一——与任何行的 mount_path/别名
+都不重复）由管理面 API 与渲染层校验，jsonb 无法表达跨行唯一约束。
 
 CREATE TABLE secret_refs (
   name         text PRIMARY KEY,                            -- Manifest 里写的字符串

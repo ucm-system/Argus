@@ -1093,7 +1093,8 @@ task:
 > **裁决：** 输入与公共参数中的任何路径对平台都是**不透明字符串（opaque string）**。平台不解析、不校验存在性、不做路径替换、不猜测容器内外映射。
 
 - 路径如何可达由 Runner 决定：镜像内置、Profile 提供的挂载点、或 Runner 自行下载。
-- **统一共享挂载是平台级配置（D-63/D-65 沿用）**：`shared_mounts` 表是运行时真源，executor 渲染所有 runner Job 时读"启用中的行"；管理面 4 个端点 + viewer 只读端点；平台不创建 PV/PVC；与 `runner.yaml.mounts` 或平台保留路径（`/workspace/output`、`/workspace/input`、`/tmp`、`/runner`）同路径 → 提交期 400。
+- **统一共享挂载是平台级配置（D-63/D-65 沿用）**：`shared_mounts` 表是运行时真源，executor 渲染所有 runner Job 时读"启用中的行"；管理面端点（列表/维护）+ viewer 只读端点；平台不创建 PV/PVC；与 `runner.yaml.mounts` 或平台保留路径（`/workspace/output`、`/workspace/input`、`/tmp`、`/runner`）同路径 → 提交期 400。
+- **一卷多挂载点（alias_paths，2026-11-27）**：部分存储后端（NFS）同一卷不允许挂两次，一条挂载记录可用 `alias_paths` 声明 Pod 内别名挂载点——渲染层对**同一条 volume** 生成多条 volumeMount（与 §6.8 output/input 复用同一卷声明的先例一致），冲突规则与 `mount_path` 一致。
 - Runner 额外挂载在 `runner.yaml.mounts` 声明：`name` / `mount_path` / `read_only` / `source`（PVC 名，缺省用平台 storage PVC）；挂载失败是运行期事实（`MOUNT_UNAVAILABLE`）。
 - 平台不得为"帮你找数据集"而引入资源登记与解析逻辑。
 

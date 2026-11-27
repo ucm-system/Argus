@@ -59,6 +59,9 @@ type Deps struct {
 	Clock domain.Clock
 	// SharedMountsFn 是平台级统一共享挂载的**运行时来源**（D-65，读 shared_mounts 表）。
 	SharedMountsFn func(ctx context.Context) ([]domain.SharedMountSpec, error)
+	// ModelProbe 是模型目录探针（GET /models 的数据来源，实现：modelprobe.Prober）。
+	// 可选：未接线时 GET /models 返回 available:false（下拉框是增强，不是依赖）。
+	ModelProbe ModelProber
 }
 
 // Server 持有 HTTP 层依赖。
@@ -79,6 +82,8 @@ type Server struct {
 	now      func() time.Time
 	// sharedMounts 是 D-65 的运行时挂载来源（nil → 用 cfg.SharedMounts）。
 	sharedMounts func(ctx context.Context) ([]domain.SharedMountSpec, error)
+	// modelProbe 是模型目录探针（nil → GET /models 返回 available:false）。
+	modelProbe ModelProber
 }
 
 // New 构造 API Server。
@@ -108,6 +113,7 @@ func New(d Deps) *Server {
 	s.now = s.clock.Now
 	s.authn = s.buildAuthenticator()
 	s.sharedMounts = d.SharedMountsFn
+	s.modelProbe = d.ModelProbe
 	if d.Catalog != nil {
 		s.assemble = &orchestrator.Assembler{
 			Catalog:       d.Catalog,
@@ -164,6 +170,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/admin/profiles", s.handleAdminCreateProfile)
 			r.Put("/admin/profiles", s.handleAdminUpdateProfile)
 			r.Delete("/admin/profiles", s.handleAdminDeleteProfile)
+			r.Get("/admin/clusters", s.handleAdminListClusters)
 			r.Post("/admin/clusters", s.handleAdminCreateCluster)
 			r.Put("/admin/clusters", s.handleAdminUpdateCluster)
 			r.Delete("/admin/clusters", s.handleAdminDeleteCluster)
@@ -211,6 +218,7 @@ func (s *Server) Handler() http.Handler {
 
 		r.Get("/profiles", s.handleListProfiles)
 		r.Get("/clusters", s.handleListClusters)
+		r.Get("/models", s.handleListModels)
 		r.Get("/queue-status", s.handleQueueStatus)
 		r.Get("/shared-mounts", s.handleListSharedMounts)
 	})

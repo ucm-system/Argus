@@ -25,6 +25,7 @@ import type {
   Identity,
   LogChunk,
   Meta,
+  ModelListing,
   Page,
   ProfileWrite,
   QueueStatus,
@@ -324,6 +325,14 @@ export const realApi: Api = {
 
   async deleteAdminSharedMount(name: string): Promise<void> {
     await request<void>(`/admin/shared-mounts/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  },
+
+  /**
+   * `GET /models?profile=`：/models 共享挂载下的模型目录名。
+   * `available:false` 不是错误（没有挂载点 / 探针未接线 / 探针失败），调用方据此回退手输框。
+   */
+  listModels(profile: string): Promise<ModelListing> {
+    return request<ModelListing>(`/models${qs({ profile })}`)
   },
 
   /* 管理（仅 admin） */

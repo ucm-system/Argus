@@ -570,6 +570,7 @@ Pod / Node 走 `v1` 原生资源（Pod 资源请求与 conditions、节点 `allo
 ### §7.4 统一共享挂载的渲染注入与启动 preflight（D-63）
 
 - **渲染**：`executor/render.go` 把平台级 `sharedMounts` 每条渲染成 `volume`（**PVC source**，`persistentVolumeClaim.claimName`）+ `volumeMount`；**不生成**内联 `volumes[].nfs`（`restricted:latest` 会拒绝，研究 #69 实测）。`Profile.sharedMounts=false` 时整段跳过。
-- **volume 名去重**：`sanitizeLabel` 之后不同 name 可能撞名（K8s 会以 `Duplicate value` 拒绝整份 Pod），渲染期统一分配唯一名；平台保留 + 统一挂载路径并成一套集合（`domain.ReservedMountPaths`），Runner `mounts[]` 撞任一 → 渲染期 `ErrSpecInvalid`、提交期 400。
+- **一卷多挂载点（alias_paths，2026-11-27）**：一条记录的 `aliasPaths` 渲染成**同一条 volume 的多条 volumeMount**（与 §6.8 output/input 复用同一卷声明的先例一致）——部分存储后端（NFS）同一卷挂两次会卡 `ContainerCreating`，不要用"两条记录指向同一 claim"表达别名。
+- **volume 名去重**：`sanitizeLabel` 之后不同 name 可能撞名（K8s 会以 `Duplicate value` 拒绝整份 Pod），渲染期统一分配唯一名；平台保留 + 统一挂载路径（含别名）并成一套集合（`domain.ReservedMountPaths`），Runner `mounts[]` 撞任一 → 渲染期 `ErrSpecInvalid`、提交期 400。
 - **启动 preflight**：按 `AG_SHARED_MOUNTS` 逐条 `get pvc`，**只告警不 fail-fast**（D-63 ④），日志带 namespace；缺 PVC 时 Pod 会 Pending，由 Runner 报"权重路径不存在"。
 - **权限**：NFS 导出侧目录 `0755`、文件 `0644`（uid 10001 原样透传；`root_squash` 不压 10001；`fsGroup` 对普通 NFS 卷无效）。

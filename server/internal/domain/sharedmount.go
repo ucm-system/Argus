@@ -18,10 +18,30 @@ type SharedMountSpec struct {
 	Name string `json:"name" yaml:"name"`
 	// MountPath 是容器内挂载点（绝对路径）。
 	MountPath string `json:"mountPath" yaml:"mountPath"`
+	// AliasPaths 是同一卷在 Pod 内的**别名挂载点**（绝对路径，如 /mnt/model）。
+	//
+	// 背景：部分存储后端（NFS）同一卷不允许被挂两次，所以"一卷多挂载点"必须在
+	// 渲染层表达——同一条 volume 生成多条 volumeMount，而不是多条 volume。
+	// 别名与 mount_path 同读写权限、同 claim；所有路径冲突规则对别名同样生效。
+	AliasPaths []string `json:"aliasPaths,omitempty" yaml:"aliasPaths,omitempty"`
 	// ReadOnly 默认 true：模型权重是只读输入，默认不给写。
 	ReadOnly bool `json:"readOnly" yaml:"readOnly"`
 	// ClaimName 是集群里已存在的 PVC 名（平台不解析它背后的存储协议）。
 	ClaimName string `json:"claimName" yaml:"claimName"`
+}
+
+// AllMountPaths 返回 mount_path + 全部别名的归一化列表（冲突校验与渲染共用）。
+func (s SharedMountSpec) AllMountPaths() []string {
+	out := make([]string, 0, 1+len(s.AliasPaths))
+	if p := cleanMountPath(s.MountPath); p != "" {
+		out = append(out, p)
+	}
+	for _, a := range s.AliasPaths {
+		if p := cleanMountPath(a); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // 平台保留挂载点（**唯一常量集**）。
@@ -57,15 +77,14 @@ func ReservedMountPaths(shared []SharedMountSpec) map[string]string {
 		RunnerDirPath:       "runner image directory",
 	}
 	for _, s := range shared {
-		p := cleanMountPath(s.MountPath)
-		if p == "" {
-			continue
-		}
 		label := s.Name
 		if label == "" {
 			label = s.ClaimName
 		}
-		out[p] = fmt.Sprintf("platform shared mount %q (PVC %q)", label, s.ClaimName)
+		// mount_path 与别名都算保留：Runner 自己的 mounts[] 撞任一 → 提交期 400（D-63 ⑤）。
+		for _, p := range s.AllMountPaths() {
+			out[p] = fmt.Sprintf("platform shared mount %q (PVC %q)", label, s.ClaimName)
+		}
 	}
 	return out
 }
@@ -103,7 +122,8 @@ func MountPathConflicts(runnerMounts []MountSpec, shared []SharedMountSpec) map[
 // NormalizeSharedMounts 校验并归一平台级统一挂载配置（启动期调用）。
 //
 // 校验（D-63）：绝对路径、非平台保留路径、name 唯一、claimName 必填；readOnly 默认 true。
-// 返回校验后的副本（不修改入参）。
+// 别名（aliasPaths）与 mount_path 同规则：绝对路径、非保留、全局唯一（与任何条目的
+// mount_path / 别名都不得重复）。返回校验后的副本（不修改入参）。
 func NormalizeSharedMounts(in []SharedMountSpec) ([]SharedMountSpec, error) {
 	out := make([]SharedMountSpec, 0, len(in))
 	names := map[string]int{}
@@ -143,6 +163,27 @@ func NormalizeSharedMounts(in []SharedMountSpec) ([]SharedMountSpec, error) {
 		}
 		names[item.Name] = i
 		paths[item.MountPath] = i
+
+		// 别名：与 mount_path 同一套规则，且全局唯一（去重归一，不改变入参）。
+		aliasOut := make([]string, 0, len(item.AliasPaths))
+		for j, a := range item.AliasPaths {
+			a = cleanMountPath(a)
+			if a == "" || !path.IsAbs(a) {
+				return nil, fmt.Errorf("sharedMounts[%d].aliasPaths[%d]: 必须是绝对路径，得到 %q", i, j, a)
+			}
+			if a == item.MountPath {
+				return nil, fmt.Errorf("sharedMounts[%d].aliasPaths[%d]: %q 与 mountPath 重复", i, j, a)
+			}
+			if reason, isReserved := reservedStatic[a]; isReserved {
+				return nil, fmt.Errorf("sharedMounts[%d].aliasPaths[%d]: %q 与平台保留路径冲突（%s）", i, j, a, reason)
+			}
+			if prev, dup := paths[a]; dup {
+				return nil, fmt.Errorf("sharedMounts[%d].aliasPaths[%d]: %q 与 sharedMounts[%d] 的挂载路径重复", i, j, a, prev)
+			}
+			paths[a] = i
+			aliasOut = append(aliasOut, a)
+		}
+		item.AliasPaths = aliasOut
 		// readOnly 的"默认 true"在**配置解析层**完成（那里能区分"未写"与"显式 false"）；
 		// 到这里时 bool 已经是最终值，不再改写。
 		out = append(out, item)

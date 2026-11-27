@@ -5,7 +5,7 @@ package api
 // 语义要点：
 //   - `shared_mounts` 表是**运行时真源**；TESTPLANE_SHARED_MOUNTS 只在表为空时做一次性种子；
 //   - 平台只存 **PVC 名**（claim_name），**不创建** PV/PVC（§10.4 边界）；
-//   - 校验：mount_path 绝对路径、不得命中保留路径、name/path 唯一、claim_name 非空；
+//   - 校验：mount_path 与别名绝对路径、不得命中保留路径、全局唯一、claim_name 非空；
 //     违反 → 400 `VALIDATION_ERROR`，`detail.issues[].code` 用 `CONFLICT`；
 //   - 写入即审计（`InAuditedTx`，审计失败整体回滚）；
 //   - 删除只影响**之后**的渲染：已提交 Run 的 Task 快照已冻结，不受影响。
@@ -35,27 +35,34 @@ const (
 
 // sharedMountDTO 是 4 个 admin 端点与只读视图共用的投影（openapi AdminSharedMount / SharedMount）。
 type sharedMountDTO struct {
-	Name      string `json:"name"`
-	MountPath string `json:"mount_path"`
-	ReadOnly  bool   `json:"read_only"`
-	ClaimName string `json:"claim_name"`
-	Enabled   bool   `json:"enabled"`
+	Name       string   `json:"name"`
+	MountPath  string   `json:"mount_path"`
+	AliasPaths []string `json:"alias_paths"`
+	ReadOnly   bool     `json:"read_only"`
+	ClaimName  string   `json:"claim_name"`
+	Enabled    bool     `json:"enabled"`
 }
 
 func toSharedMountDTO(m *store.SharedMount) sharedMountDTO {
+	alias := m.AliasPaths
+	if alias == nil {
+		alias = []string{} // 契约上恒为数组，不给 null（前端免判空）
+	}
 	return sharedMountDTO{
-		Name: m.Name, MountPath: m.MountPath, ReadOnly: m.ReadOnly,
-		ClaimName: m.ClaimName, Enabled: m.Enabled,
+		Name: m.Name, MountPath: m.MountPath, AliasPaths: alias,
+		ReadOnly: m.ReadOnly, ClaimName: m.ClaimName, Enabled: m.Enabled,
 	}
 }
 
 // sharedMountUpsertRequest 是 POST/PUT 的请求体；可选字段用指针区分"没传"与"传了 false"。
+// alias_paths 用 *[]string 区分"没传（PUT 保留旧值）"与"显式清空（[]）"；null 视为没传。
 type sharedMountUpsertRequest struct {
-	Name      string  `json:"name"`
-	MountPath *string `json:"mount_path"`
-	ReadOnly  *bool   `json:"read_only"`
-	ClaimName *string `json:"claim_name"`
-	Enabled   *bool   `json:"enabled"`
+	Name       string    `json:"name"`
+	MountPath  *string   `json:"mount_path"`
+	AliasPaths *[]string `json:"alias_paths"`
+	ReadOnly   *bool     `json:"read_only"`
+	ClaimName  *string   `json:"claim_name"`
+	Enabled    *bool     `json:"enabled"`
 }
 
 // cleanSharedMountPath 归一化（去尾斜杠 + path.Clean），保留原始绝对路径语义。
@@ -73,10 +80,10 @@ func cleanSharedMountPath(p string) string {
 	return path.Clean(p)
 }
 
-// validateSharedMount 校验一条候选记录（self 为空表示新建）。
+// validateSharedMount 校验一条候选记录（self 为空表示新建；aliasPaths 是候选别名，调用方已归一化）。
 //
 // 返回 (issues, ok)：issues 里带 path/code/message，直接放进 400 的 detail.issues。
-func (s *Server) validateSharedMount(ctx context.Context, name, mountPath, claimName, self string) []map[string]any {
+func (s *Server) validateSharedMount(ctx context.Context, name, mountPath, claimName string, aliasPaths []string, self string) []map[string]any {
 	var issues []map[string]any
 	add := func(p, code, msg string) {
 		issues = append(issues, map[string]any{"path": p, "code": code, "message": msg})
@@ -98,10 +105,30 @@ func (s *Server) validateSharedMount(ctx context.Context, name, mountPath, claim
 				fmt.Sprintf("mount_path %q 与平台保留路径冲突（%s）", mountPath, reason))
 		}
 	}
+	// 别名（alias_paths，D-63 一卷多挂载点）：绝对路径、非保留路径、条目内互不重复、
+	// 不得等于自身 mount_path。
+	aliasSeen := map[string]bool{mountPath: true}
+	for i, a := range aliasPaths {
+		field := fmt.Sprintf("alias_paths[%d]", i)
+		a = cleanSharedMountPath(a)
+		if a == "" || !path.IsAbs(a) {
+			add(field, domain.IssueCodeRequired, fmt.Sprintf("别名 %q 必须是绝对路径（如 /mnt/model）", a))
+			continue
+		}
+		if reason, reserved := domain.ReservedMountPaths(nil)[a]; reserved {
+			add(field, domain.IssueCodeConflict, fmt.Sprintf("别名 %q 与平台保留路径冲突（%s）", a, reason))
+			continue
+		}
+		if aliasSeen[a] {
+			add(field, domain.IssueCodeConflict, fmt.Sprintf("别名 %q 与该挂载点的其他路径重复", a))
+			continue
+		}
+		aliasSeen[a] = true
+	}
 	if len(issues) > 0 {
 		return issues
 	}
-	// name / path 唯一：与**其它行**比较（self 表示更新时排除自己）。
+	// name / path / 别名唯一：与**其它行**比较（self 表示更新时排除自己）。
 	rows, err := s.st.SharedMounts.List(ctx, nil, false)
 	if err != nil {
 		// 查库失败交给上层 failErr（这里不伪造校验结论）。
@@ -116,12 +143,41 @@ func (s *Server) validateSharedMount(ctx context.Context, name, mountPath, claim
 		if row.Name == name {
 			add("name", domain.IssueCodeConflict, fmt.Sprintf("name %q 已存在（同名挂载点）", name))
 		}
-		if cleanSharedMountPath(row.MountPath) == mountPath {
+		// 候选（mount_path + 别名）与已存在行（mount_path + 别名）两两不交：
+		// 同一路径在 Pod 里挂两次是配置错误（03 §3.2 的唯一约束对别名同样成立，应用层校验）。
+		existing := map[string]string{cleanSharedMountPath(row.MountPath): row.Name}
+		for _, a := range row.AliasPaths {
+			if p := cleanSharedMountPath(a); p != "" {
+				existing[p] = row.Name
+			}
+		}
+		if _, hit := existing[mountPath]; hit {
 			add("mount_path", domain.IssueCodeConflict,
 				fmt.Sprintf("mount_path %q 已被挂载点 %q 占用", mountPath, row.Name))
 		}
+		for j, a := range aliasPaths {
+			if _, hit := existing[cleanSharedMountPath(a)]; hit {
+				add(fmt.Sprintf("alias_paths[%d]", j), domain.IssueCodeConflict,
+					fmt.Sprintf("别名 %q 已被挂载点 %q 占用", a, row.Name))
+			}
+		}
 	}
 	return issues
+}
+
+// normalizeAliasInput 把请求里的别名归一化（TrimSpace + Clean + 去空）。
+// nil 透传（= "没传"）；非 nil 归一后即使为空也返回空数组（= "显式清空"）。
+func normalizeAliasInput(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, a := range in {
+		if a = cleanSharedMountPath(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // handleAdminListSharedMounts 是 GET /api/v1/admin/shared-mounts（admin）。
@@ -152,13 +208,17 @@ func (s *Server) handleAdminCreateSharedMount(w http.ResponseWriter, r *http.Req
 		return
 	}
 	mountPath, claimName := "", ""
+	var aliasPaths []string
 	if req.MountPath != nil {
 		mountPath = *req.MountPath
 	}
 	if req.ClaimName != nil {
 		claimName = *req.ClaimName
 	}
-	if issues := s.validateSharedMount(ctx, name, mountPath, claimName, ""); len(issues) > 0 {
+	if req.AliasPaths != nil {
+		aliasPaths = normalizeAliasInput(*req.AliasPaths)
+	}
+	if issues := s.validateSharedMount(ctx, name, mountPath, claimName, aliasPaths, ""); len(issues) > 0 {
 		s.rejectValidation(w, r, actionMountRegister, objectTypeSharedMount, name,
 			"共享挂载校验失败", map[string]any{"issues": issues})
 		return
@@ -171,6 +231,9 @@ func (s *Server) handleAdminCreateSharedMount(w http.ResponseWriter, r *http.Req
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	if aliasPaths == nil {
+		aliasPaths = []string{} // 新建未带别名 = 空数组（契约上恒为数组）
+	}
 	if _, err := s.st.SharedMounts.Get(ctx, nil, name); err == nil {
 		s.rejectWrite(w, r, actionMountRegister, objectTypeSharedMount, name,
 			http.StatusConflict, domain.CodeConflict,
@@ -182,13 +245,15 @@ func (s *Server) handleAdminCreateSharedMount(w http.ResponseWriter, r *http.Req
 	}
 
 	m := &store.SharedMount{
-		Name: name, MountPath: cleanSharedMountPath(mountPath), ReadOnly: readOnly,
+		Name: name, MountPath: cleanSharedMountPath(mountPath), AliasPaths: aliasPaths,
+		ReadOnly:  readOnly,
 		ClaimName: strings.TrimSpace(claimName), Enabled: enabled,
 		CreatedBy: Actor(ctx), UpdatedBy: Actor(ctx),
 	}
 	err := s.st.InAuditedTx(ctx, s.auditEntry(r, actionMountRegister, objectTypeSharedMount, name,
-		map[string]any{"mount_path": m.MountPath, "claim_name": m.ClaimName,
-			"read_only": m.ReadOnly, "enabled": m.Enabled}), func(tx pgx.Tx) error {
+		map[string]any{"mount_path": m.MountPath, "alias_paths": m.AliasPaths,
+			"claim_name": m.ClaimName,
+			"read_only":  m.ReadOnly, "enabled": m.Enabled}), func(tx pgx.Tx) error {
 		return s.st.SharedMounts.Upsert(ctx, tx, m)
 	})
 	if err != nil {
@@ -207,6 +272,7 @@ func (s *Server) handleAdminCreateSharedMount(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.logger.Info("shared mount registered", "name", m.Name, "mount_path", m.MountPath,
+		"alias_count", len(m.AliasPaths),
 		"claim_name", m.ClaimName, "read_only", m.ReadOnly, "enabled", m.Enabled)
 	writeJSON(w, http.StatusCreated, toSharedMountDTO(m))
 }
@@ -249,7 +315,12 @@ func (s *Server) handleAdminUpdateSharedMount(w http.ResponseWriter, r *http.Req
 	if req.ClaimName != nil {
 		claimName = *req.ClaimName
 	}
-	if issues := s.validateSharedMount(ctx, name, mountPath, claimName, name); len(issues) > 0 {
+	// alias_paths：没传（含 null）保留旧值；显式传数组（含 []）= 覆盖。
+	aliasPaths := cur.AliasPaths
+	if req.AliasPaths != nil {
+		aliasPaths = normalizeAliasInput(*req.AliasPaths)
+	}
+	if issues := s.validateSharedMount(ctx, name, mountPath, claimName, aliasPaths, name); len(issues) > 0 {
 		s.rejectValidation(w, r, actionMountUpdate, objectTypeSharedMount, name,
 			"共享挂载校验失败", map[string]any{"issues": issues})
 		return
@@ -262,14 +333,19 @@ func (s *Server) handleAdminUpdateSharedMount(w http.ResponseWriter, r *http.Req
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	if aliasPaths == nil {
+		aliasPaths = []string{}
+	}
 	m := &store.SharedMount{
-		Name: name, MountPath: cleanSharedMountPath(mountPath), ReadOnly: readOnly,
+		Name: name, MountPath: cleanSharedMountPath(mountPath), AliasPaths: aliasPaths,
+		ReadOnly:  readOnly,
 		ClaimName: strings.TrimSpace(claimName), Enabled: enabled,
 		CreatedBy: cur.CreatedBy, UpdatedBy: Actor(ctx),
 	}
 	err = s.st.InAuditedTx(ctx, s.auditEntry(r, actionMountUpdate, objectTypeSharedMount, name,
-		map[string]any{"mount_path": m.MountPath, "claim_name": m.ClaimName,
-			"read_only": m.ReadOnly, "enabled": m.Enabled}), func(tx pgx.Tx) error {
+		map[string]any{"mount_path": m.MountPath, "alias_paths": m.AliasPaths,
+			"claim_name": m.ClaimName,
+			"read_only":  m.ReadOnly, "enabled": m.Enabled}), func(tx pgx.Tx) error {
 		return s.st.SharedMounts.Upsert(ctx, tx, m)
 	})
 	if err != nil {
@@ -288,6 +364,7 @@ func (s *Server) handleAdminUpdateSharedMount(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.logger.Info("shared mount updated", "name", m.Name, "mount_path", m.MountPath,
+		"alias_count", len(m.AliasPaths),
 		"claim_name", m.ClaimName, "read_only", m.ReadOnly, "enabled", m.Enabled)
 	m.CreatedAt = cur.CreatedAt
 	writeJSON(w, http.StatusOK, toSharedMountDTO(m))

@@ -333,6 +333,7 @@ X-Log-Coverage: 2026-11-10T01:00:00Z/2026-11-10T01:32:10Z
 | `GET` | `/secrets` | Secret 名称与说明（operator） |
 | `GET` | `/queue-status` | 平台槽位 + Volcano 等待原因 |
 | `GET` | `/shared-mounts` | 平台级统一共享挂载的只读视图（viewer+；只回启用中的，回答"这次 Task 会挂什么"，D-65） |
+| `GET` | `/models?profile=` | `/models` 共享挂载下的模型目录名（viewer+；探针 Job 现做，缓存 5m；`available:false` 不是错误，见下） |
 | `GET` | `/meta` | `{version, api_version, features}` |
 
 **`/queue-status` 的语义（D-49）**：`slots` 是平台自身的槽位（endpoint 独占 / 全局并发）；`waiting` 是平台侧排队（按 `waiting_reason` 分组）；`volcano` 是**集群调度器视角**的队列快照，直接读 CRD，**不经 Genet**。三者必须分开展示，不能相加成"一个排队数"。`volcano.available=false` 时 `detail` 取四态之一（`crd_missing`/`rbac_forbidden`/`scheduler_unavailable`/`disabled`），且 **不可达不等于 0 排队**；多集群时 `queues[].name` 用 `"<cluster>/<queue>"`。`volcano.queues[].pending_jobs` 是该队列下 `phase=Pending` 的 PodGroup 计数（不是 `queue.status.pending`），`longest_wait_seconds` 取 `now - min(podgroup.creationTimestamp)`（phase ∈ Pending/Inqueue）。
@@ -349,10 +350,11 @@ X-Log-Coverage: 2026-11-10T01:00:00Z/2026-11-10T01:32:10Z
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/admin/shared-mounts` | 平台级统一共享挂载列表（含停用行，D-65） |
-| `POST` | `/admin/shared-mounts` | 新建 `{name, mount_path, read_only?, claim_name, enabled?}`（默认只读、默认启用） |
-| `PUT` | `/admin/shared-mounts/{name}` | 改 `mount_path` / `read_only` / `claim_name` / `enabled`（name 不可改） |
+| `POST` | `/admin/shared-mounts` | 新建 `{name, mount_path, alias_paths?, read_only?, claim_name, enabled?}`（默认只读、默认启用；`alias_paths` 是同一卷的 Pod 内别名挂载点） |
+| `PUT` | `/admin/shared-mounts/{name}` | 改 `mount_path` / `alias_paths` / `read_only` / `claim_name` / `enabled`（name 不可改；`alias_paths` 省略=保留旧值，显式 `[]`=清空） |
 | `DELETE` | `/admin/shared-mounts/{name}` | 删除；只影响之后的渲染（已提交 Task 的执行记录快照不变） |
 | `POST/PUT/DELETE` | `/admin/profiles` | Profile 维护 |
+| `GET` | `/admin/clusters` | 集群登记列表（含 `kubeconfig_key` 文件名——凭据内容永不出现；管理台数据源） |
 | `POST/PUT/DELETE` | `/admin/clusters` | 集群登记（`kubeconfig_key`） |
 | `GET/POST` | `/admin/secrets` | 引用列表/登记 |
 | `POST` | `/admin/secrets/{name}/rotate` | 轮换校验 + 审计 |
@@ -363,6 +365,19 @@ X-Log-Coverage: 2026-11-10T01:00:00Z/2026-11-10T01:32:10Z
 deploy/clean），`shared_mounts` 表是运行时真源（`AG_SHARED_MOUNTS` 只是首次启动的种子）。平台**不创建** PV/PVC——
 存储供给归集群运维，管理面只填一个已存在的 `claim_name`（内联 `volumes[].nfs` 会被 PodSecurity `restricted` 拒绝）。
 校验失败 → 400 `VALIDATION_ERROR`，`detail.issues[].code` 为 `CONFLICT`（路径/名字冲突）或 `REQUIRED`（缺 `claim_name`）。
+
+**`alias_paths` 的语义（D-63，2026-11-27 用户实测）**：部分存储后端（NFS）同一卷不允许被挂两次，
+"一卷多挂载点"在渲染层表达——一条记录的 `mount_path` + `alias_paths` 渲染成**同一条 volume 的多条
+volumeMount**，不是多条 volume（与 §6.8 output/input 复用同一卷声明的先例一致）。例：
+`mount_path=/models` + `alias_paths=["/mnt/model"]` → `/mnt/model` 映射到 `/models`。
+别名与 `mount_path` 同 claim、同读写权限；冲突规则（绝对路径、非保留路径、全局唯一）与 `mount_path` 一致。
+
+**`GET /models` 的语义（2026-11-27）**：提交页"模型路径"下拉框的数据源。`?profile=` 必填——
+`claim_name` 是 namespace 作用域对象，探针要在 runner Job 的同一 namespace（profile.namespace）里跑才能看到
+同一个 PVC。列举由一次性探针 Job 完成（RO 挂 claim，`ls` 一把读日志，读完即删；不带 `argus.io/managed` label，
+GC 不碰它；TTL 缓存 5m，镜像 `AG_MODEL_PROBE_IMAGE` 缺省 `alpine:3.20`）。平台**不登记模型**、不解释模型格式
+（§10.4：路径是不透明字符串）。`available:false`（`model_dir_not_mounted` / `probe_unavailable` / `probe_failed`）
+都返回 200：下拉框是**增强**，前端拿不到列表就回退手输框，绝不挡提交。
 
 > Runner 注册**没有**运行时管理端点：目录自动发现（扫描 `runners/*/runner.yaml`），`deploy` / `clean` 角色仅内置、
 > 用户注册拒绝（§5.1）；版本退役靠目录比对标 `orphaned`（`registry.Store.MarkRunnerOrphaned`，D-60）。

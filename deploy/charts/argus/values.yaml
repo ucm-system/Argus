@@ -247,12 +247,13 @@ extraVolumeMounts: []
 #   - root_squash 只压 uid 0，**不影响** uid 10001；文件 0600 由 root 拥有时 10001 读不到；
 #   - fsGroup 对普通 NFS 卷**无效**（不会 chown/chgrp），别指望它改属主。
 sharedMounts:
+  # 一卷多挂载点（aliasPaths）：/mnt/model 是 /models 的 Pod 内别名——同一条 volume
+  # 渲染多条 volumeMount。**不要**用两条记录指向同一 claim 表达别名：部分存储后端
+  # （NFS）同一卷挂两次会让 Pod 卡在 ContainerCreating。
   - name: models
     mountPath: /models
-    readOnly: true
-    claimName: argus-models
-  - name: model-alt
-    mountPath: /mnt/model
+    aliasPaths:
+      - /mnt/model
     readOnly: true
     claimName: argus-models
   # 数据集 / 语料：**可写**（agentx 这类 Runner 要在语料目录里写 .agentx-split/）。
