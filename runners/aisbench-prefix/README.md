@@ -446,7 +446,7 @@ docker build -f runners/aisbench-prefix/build/Dockerfile \
 | **kind 真跑（真 ais_bench 3.1.20260630 + mock 服务 + 真 tokenizer）** | 平台 API 提交 Task，`service:` 外接模式 + `precheck: auto`，镜像先 `load-image.ps1` 灌进节点 | 两条链路都验证过，见下 |
 | arm64 构建 | `docker buildx build --platform linux/arm64 --load …`（本机 binfmt 模拟） | **成功**：镜像 `architecture=arm64`，容器内 `uname -m=aarch64`、`ais_bench 3.1.0`、`torch 2.14.1+cpu`/`pandas` 导入正常、uid 10001；pip 全程解析 aarch64 wheel 无需源码编译（几个无 wheel 的小包在模拟下 sdist 编译也过了）。CI 上由原生 `ubuntu-24.04-arm` 跑，分钟级 |
 
-kind 真跑细节（Task `t-20261127-9C8W`，runner `aisbench-prefix@0.1.2`）：
+kind 真跑细节（Task `t-20261127-TMXF`，runner `aisbench-prefix@0.1.4`（三点阶梯 [2,4,8]））：
 
 ```yaml
 service: { url: http://mock-llm.argus.svc.cluster.local:18080/v1, model_name: qwen3-32b }
@@ -456,16 +456,7 @@ input: {"concurrency":[2,4],"input_len":256,"output_len":16,"data_num":16,
         "seed":7,"seed_per_point":true,"run_timeout":600}
 ```
 
-结果：`succeeded`，62 metrics / 38 artifacts / duration 50.2s；每点独立预热 + 命中率
-（`hit_rate hbm c=2 → 42.7%`、`c=4 → 66.11%`，`labels.point` 区分）；实测并发
-1.97/3.71 对得上目标 2/4；`external_prefix_cache_*` 缺失在 notes 写明（不编 0）。
-
-kind 真跑发现并当场修掉的问题（都已带回归测试）：
-
-| # | 症状 | 根因 | 修复 |
-|---|---|---|---|
-| 1 | `OSError [Errno 30] Read-only file system` | 工具以 `open('default_api.py','r+')` 打开**只读根文件系统**里的模板 | 改 `'r'`；smoke 加静态断言（A3） |
-| 2 | 所有请求 404（`error_info: "Not Found"`） | ais_bench 3.1.**20260630** 给非空 path 补尾斜杠，`url=…/v1` 被拼成 `…/v1/v1/chat/completions`（0330 版无此问题） | url 字段给**服务根**（去掉 `/v1` 段）；两种版本行为都进了单测 |
+结果：`succeeded`，93 metrics / 59 artifacts / duration 76.8s；每点独立预热 + 命中率（`hit_rate hbm c=2 → 85.4%`、`c=4 → 74.37%`、`c=8 → 76.16%`，`labels.point` 区分）；实测并发 1.97/3.72/6.62 对得上目标 2/4/8；`external_prefix_cache_*` 缺失在 notes 写明（不编 0）。**两个观察 artifact 都列进 artifacts**：`result.html`（12.5KB，阶梯表 + 3 张趋势图 + 零外部引用）与 `aisbench_result.csv`（1.4KB，上游列序聚合表）。error_info: "Not Found"`） | ais_bench 3.1.**20260630** 给非空 path 补尾斜杠，`url=…/v1` 被拼成 `…/v1/v1/chat/completions`（0330 版无此问题） | url 字段给**服务根**（去掉 `/v1` 段）；两种版本行为都进了单测 |
 | 3 | 命中率整张表丢失（`Skipped PODs`） | 上游要求 vllm+external 八个计数器字典齐全，vLLM 默认只有 `vllm:prefix_cache_*` | hbm/external 分开判；external 缺失写 notes 不编 0 |
 | 4 | 平台判 `RESULT_INVALID`（metrics[i] 与前面重复） | 附录 A 硬规则 `name+statistic+labels` 唯一；两点阶梯的预热阶段并发相同（都=prefix_num） | 所有指标加 `labels.point`；`concurrency` 去重；summarize 撞键丢弃并记录 |
 | 5 | `duration_ms=0` | `write_result` 赋值链里一个空行把 `AG_STARTED/AG_START_EPOCH` 断成 shell 局部变量 | 合并成一条前缀赋值 |
