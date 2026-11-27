@@ -197,7 +197,10 @@ def modify_aisbench_api(concurrency, output_len, request_rate_param=None):
     EFFECTIVE_BATCH_SIZE = concurrency
     # 【本地改动】模板路径走 TOOL_DIR：上游写死 "default_api.py"（CWD 相对），
     # 而 Runner 把 CWD 设成产物目录（aisbench.log / temp_api.py 才落得到收集目录）。
-    file_default = open(os.path.join(prefix_env.TOOL_DIR, "default_api.py"), 'r+')
+    # 【本地改动·kind 实测】打开模式 'r+' → 'r'：`/runner/tool` 在容器里位于**只读根文件系统**
+    # （平台 Executor 固定 ReadOnlyRootFilesystem），上游的读写模式会直接
+    # `OSError: [Errno 30] Read-only file system`。模板本来就只读不写。
+    file_default = open(os.path.join(prefix_env.TOOL_DIR, "default_api.py"), 'r')
     file_temp = open("temp_api.py", 'w+')
     logging.info("Api config file:")
     for ss in file_default.readlines():
@@ -290,22 +293,24 @@ def cal_prefix_hit_info(query_tokens, query_tokens_external, hit_tokens, hit_tok
 
     total_hbm_queries = total_hbm_hits = total_external_queries = total_external_hits = 0
     pod_sections, skipped_pods, metric_rows = [], [], []
-
+    # 【本地改动·kind 实测】hbm 与 external 分开判：上游要求「8 个字典全都在」才差分，
+    # 而 vLLM 默认只暴露 vllm:prefix_cache_{queries,hits}_total —— external_prefix_cache_*
+    # 是连接器（LMCache 等）才有的。真跑时因此整张命中率表被丢掉（Skipped PODs），
+    # 把最重要的那个指标一起牺牲了。现在：hbm 四项齐 → 就出 hbm 命中率；
+    # external 四项齐 → 才出 external 列（否则 sidecar 标 external_available=false）。
     for pod, engines in sorted(query_tokens.items()):
-        # 八类指标必须全部存在，且 engine_id 完全一致；
-        # 否则无法可靠计算"测试后累计值 - 测试前累计值"，跳过该 POD
-        metrics = [query_tokens.get(pod), query_tokens_external.get(pod), hit_tokens.get(pod),
-                   hit_tokens_external.get(pod), query_tokens_new.get(pod), query_tokens_external_new.get(pod),
-                   hit_tokens_new.get(pod), hit_tokens_external_new.get(pod)]
-
-        if not all(metrics):
+        hbm_pair = [query_tokens.get(pod), hit_tokens.get(pod),
+                    query_tokens_new.get(pod), hit_tokens_new.get(pod)]
+        ext_pair = [query_tokens_external.get(pod), hit_tokens_external.get(pod),
+                    query_tokens_external_new.get(pod), hit_tokens_external_new.get(pod)]
+        if not all(hbm_pair):
             skipped_pods.append(pod)
             continue
-
         engine_ids = set(engines)
-        if any(set(metric) != engine_ids for metric in metrics[1:]):
+        if any(set(metric) != engine_ids for metric in hbm_pair[1:]):
             skipped_pods.append(pod)
             continue
+        external_ok = all(ext_pair) and all(set(metric) == engine_ids for metric in ext_pair[1:])
 
         # 按 engine_id 升序遍历，为每个 engine 单独生成一行
         engine_rows = []
@@ -313,16 +318,20 @@ def cal_prefix_hit_info(query_tokens, query_tokens_external, hit_tokens, hit_tok
             engine_scope = f"{pod}/engine{engine_id}"
             engine_hbm_queries = query_tokens_new[pod][engine_id] - query_tokens[pod][engine_id]
             engine_hbm_hits = hit_tokens_new[pod][engine_id] - hit_tokens[pod][engine_id]
-            engine_external_queries = query_tokens_external_new[pod][engine_id] \
-                - query_tokens_external[pod][engine_id]
-            engine_external_hits = hit_tokens_external_new[pod][engine_id] \
-                - hit_tokens_external[pod][engine_id]
+            if external_ok:
+                engine_external_queries = query_tokens_external_new[pod][engine_id] \
+                    - query_tokens_external[pod][engine_id]
+                engine_external_hits = hit_tokens_external_new[pod][engine_id] \
+                    - hit_tokens_external[pod][engine_id]
+            else:
+                engine_external_queries = engine_external_hits = 0
             engine_rows.append(build_row(engine_scope, engine_hbm_hits, engine_hbm_queries,
                                          engine_external_hits, engine_external_queries))
             metric_rows.append({
                 "scope": engine_scope,
                 "hbm_hits": engine_hbm_hits, "hbm_queries": engine_hbm_queries,
                 "external_hits": engine_external_hits, "external_queries": engine_external_queries,
+                "external_available": external_ok,
             })
 
         # 合并当前 POD 下所有 engine_id 的指标增量，用于 ALL_PODS 汇总
@@ -330,10 +339,13 @@ def cal_prefix_hit_info(query_tokens, query_tokens_external, hit_tokens, hit_tok
                               for engine_id in engine_ids)
         pod_hbm_hits = sum(hit_tokens_new[pod][engine_id] - hit_tokens[pod][engine_id]
                            for engine_id in engine_ids)
-        pod_external_queries = sum(query_tokens_external_new[pod][engine_id]
-                                   - query_tokens_external[pod][engine_id] for engine_id in engine_ids)
-        pod_external_hits = sum(hit_tokens_external_new[pod][engine_id]
-                                - hit_tokens_external[pod][engine_id] for engine_id in engine_ids)
+        if external_ok:
+            pod_external_queries = sum(query_tokens_external_new[pod][engine_id]
+                                       - query_tokens_external[pod][engine_id] for engine_id in engine_ids)
+            pod_external_hits = sum(hit_tokens_external_new[pod][engine_id]
+                                    - hit_tokens_external[pod][engine_id] for engine_id in engine_ids)
+        else:
+            pod_external_queries = pod_external_hits = 0
 
         # 每个 POD 按 engine 升序输出，POD 之间用分隔线隔开
         pod_sections.append(engine_rows)
@@ -354,13 +366,19 @@ def cal_prefix_hit_info(query_tokens, query_tokens_external, hit_tokens, hit_tok
     skipped_pods_line = f"Skipped PODs: {', '.join(skipped_pods)}" if skipped_pods else None
 
     # 【本地改动】给 Runner 的结构化副本（phase + 本阶段实际 batch_size 一起给）。
+    any_external = any(row.get("external_available") for row in metric_rows)
     metric_rows.append({
         "scope": "ALL_PODS",
         "hbm_hits": total_hbm_hits, "hbm_queries": total_hbm_queries,
         "external_hits": total_external_hits, "external_queries": total_external_queries,
+        "external_available": any_external,
     })
     prefix_env.emit("hit", phase=phase, concurrency=EFFECTIVE_BATCH_SIZE,
-                    rows=metric_rows, skipped_pods=list(skipped_pods), reason="")
+                    rows=metric_rows, skipped_pods=list(skipped_pods),
+                    external_available=any_external, reason="")
+    if not any_external:
+        logging.info("external_prefix_cache_* 计数器不可用（多数 vLLM 部署如此）："
+                     "只给 hbm 命中率，external 列不计入结果")
 
     # 控制台只输出所有有效 POD 的汇总
     console_lines = ["=" * line_width, "Prefix cache hit summary", "=" * line_width, header,
@@ -503,9 +521,10 @@ if __name__ == '__main__':
     # 【本地改动】把本次真正生效的口径写进 sidecar，供 result.json 的 workload 使用。
     # 注意写的是归一化后的值（repeat_rate 已被 parse 成 float、寻址已被 config.py 决定），
     # 不是用户原始输入——排查时要看的是「实际跑了什么」。
+    _target = prefix_env.resolve_target()
     prefix_env.emit("config", input_len=input_len, output_len=output_len,
                     data_num=data_num, request_rate=request_rate,
-                    target=prefix_env.resolve_target().describe(),
+                    target=_target.describe(), base_url=_target.base_url(),
                     model_name=MODEL_NAME, model_path=MODEL_PATH,
                     dataset_type=dataset_type, prefix_num=prefix_num,
                     repeat_rate=repeat_rate, prefix_test=prefix_test, seed=seed, dp=dp,

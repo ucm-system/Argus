@@ -115,6 +115,9 @@ EOF
 
 # --- 写 result.json：把结论交给 summarize.py（附录 A schema 2.0）-----------------
 write_result() {
+  # 注意：这一串必须是**一条命令的前缀赋值**（中间不能有空行）——断成两条的话
+  # AG_STARTED/AG_START_EPOCH 只是本 shell 的局部变量，子进程读不到，
+  # result.json 的 duration_ms 就会恒为 0（kind 真跑时踩过）。
   AG_OUTPUT_DIR="${OUT}" \
   AG_TASK_ID="${TASK_ID}" \
   AG_ATTEMPT="$(num_or "${ATTEMPT_NO}" 1)" \
@@ -122,7 +125,6 @@ write_result() {
   AG_RUNNER_IMAGE="${IMAGE_REF}" \
   AG_RUNNER_VERSION="${VERSION}" \
   AG_STARTED="${STARTED}" AG_START_EPOCH="${START_EPOCH}" \
-
   AG_AISBENCH_VERSION="${AISBENCH_VERSION:-unknown}" \
   "${PYTHON}" "${SUMMARIZE_PY}" --out "${OUT}" || return 1
 }
@@ -292,6 +294,16 @@ is_uint "${NPU_NUM}"    || param_error "npu_num 必须是正整数"
 is_num  "${REQUEST_RATE}" || param_error "request_rate 必须是非负数（0=不限速）"
 is_num  "${RUN_TIMEOUT}"  || param_error "run_timeout 必须是非负数（秒，0=不限）"
 for c in "${CONCURRENCY_LIST[@]}"; do is_uint "${c}" || param_error "concurrency 的每一项必须是正整数，收到：${c}"; done
+# 去重：重复的并发值会共用同一个产物目录（point-<c>），后者覆盖前者 → 结论串台。
+# 顺带也保证 result.json 的指标键唯一（附录 A 的 name+statistic+labels 不重复）。
+DEDUPED=()
+for c in "${CONCURRENCY_LIST[@]}"; do
+  already="false"
+  for d in ${DEDUPED[@]+"${DEDUPED[@]}"}; do [ "${d}" = "${c}" ] && already="true" && break; done
+  [ "${already}" = "true" ] && { log "concurrency 有重复值 ${c}，已去重"; continue; }
+  DEDUPED+=("${c}")
+done
+CONCURRENCY_LIST=("${DEDUPED[@]}")
 case "${DATASET_TYPE}" in prefix_cache|normal) ;; *) param_error "dataset_type 只能是 prefix_cache 或 normal" ;; esac
 case "${TEST_TYPE}" in stream|text) ;; *) param_error "test_type 只能是 stream 或 text" ;; esac
 case "${SUMMARIZER_NAME}" in default_perf|stable_stage) ;; *) param_error "summarizer 只能是 default_perf 或 stable_stage" ;; esac
@@ -368,8 +380,12 @@ AISBENCH_VERSION="$(${PYTHON} -c 'import ais_bench.benchmark as m; print(getattr
 log "ais_bench：cmd=${AISBENCH_CMD} version=${AISBENCH_VERSION}"
 
 # --- 被测服务可达性预检（只为把错误说清楚，不替代 endpoint-probe）----------------
+# 三次尝试、每次 10s：kind/容器网络在集群重启后有几秒抖动，单次探测会把「还没就绪」
+# 误判成「不可达」（本机 kind 实测：precheck 第 7 次才通，而这里单次 10s 直接判死）。
 if [ "${TEST_ACCURACY}" != "true" ]; then
-  if ! "${PYTHON}" - "${TARGET}" <<'PYPROBE' >&2
+  PROBE_OK="false"
+  for attempt in 1 2 3; do
+    if "${PYTHON}" - "${TARGET}" <<'PYPROBE' >&2
 import socket, sys
 from urllib.parse import urlparse
 
@@ -384,8 +400,12 @@ except OSError as exc:
     print(f"[probe] TCP 连不上 {host}:{port}：{exc}", file=sys.stderr)
     sys.exit(1)
 PYPROBE
-  then
-    hard_fail "被测服务不可达：${TARGET}（TCP 连接失败）。先看 precheck 的 endpoint-probe 日志与网络策略（NetworkPolicy 默认拒绝，需要放行被测端口）" \
+    then PROBE_OK="true"; break; fi
+    log "可达性预检第 ${attempt} 次未通过：${TARGET}"
+    sleep 5
+  done
+  if [ "${PROBE_OK}" != "true" ]; then
+    hard_fail "被测服务不可达：${TARGET}（三次 TCP 连接都失败）。先看 precheck 的 endpoint-probe 日志与网络策略（NetworkPolicy 默认拒绝，需要放行被测端口）" \
       "ENDPOINT_UNREACHABLE" "未执行任何压测" "true"
   fi
 fi

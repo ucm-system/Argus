@@ -32,7 +32,8 @@ class TargetTests(unittest.TestCase):
         fields = self.fields("http://sla-mock.argus-mock.svc:18080/v1")
         self.assertEqual(fields["host_ip"], "localhost", "非 IP 时 host_ip 只能写 localhost")
         self.assertEqual(fields["host_port"], 18080)
-        self.assertEqual(fields["url"], "http://sla-mock.argus-mock.svc:18080/v1")
+        self.assertEqual(fields["url"], "http://sla-mock.argus-mock.svc:18080",
+                         "url 必须是服务根：ais_bench 0630 会给 path 补尾斜杠，给 .../v1 就变双 /v1")
 
     def test_trailing_slash_is_dropped(self):
         """带尾斜杠时 urljoin 会变成 …/v1/v1/chat/completions（实测过）。"""
@@ -50,20 +51,35 @@ class TargetTests(unittest.TestCase):
                          "http://gw.internal:80/openai/v1/chat/completions")
 
     def test_chat_url_never_double_v1(self):
-        """ais_bench 拼的是 urljoin(base, "v1/chat/completions")：各种写法都得对。"""
+        """ais_bench 拼的是 urljoin(base, "v1/chat/completions")：各种写法都得对。
+
+        回归的就是 kind 真跑踩到的那个坑：ais_bench 3.1.20260630 的
+        `base_api._get_base_url()` 会给非空 path 补尾斜杠，`.../v1` 于是变成
+        `.../v1/v1/chat/completions`（404 Not Found）。所以 url 字段给**服务根**。
+        """
         from urllib.parse import urljoin
         expected = "http://h:8000/v1/chat/completions"
         for base in ("http://h:8000", "http://h:8000/", "http://h:8000/v1",
-                     "http://h:8000/v1/", "h:8000/v1"):
-            self.assertEqual(urljoin(prefix_env.parse_target(base).base_url(),
-                                     "v1/chat/completions"), expected,
-                             f"base={base} 拼出的接口不对")
+                     "http://h:8000/v1/", "h:8000/v1", "http://h:8000/openai/v1"):
+            target = prefix_env.parse_target(base)
+            joined = urljoin(target.base_url(), "v1/chat/completions")
+            if "openai" in base:
+                self.assertEqual(joined, "http://h:8000/openai/v1/chat/completions",
+                                 f"网关前缀场景 base={base}")
+            else:
+                self.assertEqual(joined, expected, f"base={base} 拼出的接口不对")
+
+    def test_openai_version_segment_is_stripped(self):
+        self.assertEqual(prefix_env.parse_target("http://h:8000/v1").base_url(), "http://h:8000")
+        self.assertEqual(prefix_env.parse_target("http://h:8000/v1/").base_url(), "http://h:8000")
+        # /metrics 的 host:port 不受影响
+        self.assertEqual(prefix_env.parse_target("http://h:8000/v1").metrics_endpoint(), "h:8000")
 
     def test_ipv6_bracketed(self):
         target = prefix_env.parse_target("http://[::1]:8000/v1")
         self.assertEqual(target.host, "::1")
         self.assertTrue(target.is_ip)
-        self.assertEqual(target.base_url(), "http://[::1]:8000/v1")
+        self.assertEqual(target.base_url(), "http://[::1]:8000")
         self.assertEqual(target.metrics_endpoint(), "[::1]:8000")
 
     def test_default_port_follows_scheme(self):

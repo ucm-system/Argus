@@ -95,14 +95,38 @@ def read_events(points_root):
     return [(point, rows) for _order, point, rows in found]
 
 
-def hit_rows(events, phase):
-    """取指定 phase 最后一条 hit 事件（同一 phase 可能有 0/多条）。"""
-    picked = None
+def hit_events(events):
+    """每个 point 的 hit 事件（同一 phase 取最后一条），→ [(concurrency, event, point)]。"""
+    picked = {}
     for point, rows in events:
         for event in rows:
-            if event.get("kind") == "hit" and event.get("phase") == phase:
-                picked = (point, event)
+            if event.get("kind") == "hit" and event.get("phase") == "full":
+                picked[point] = event        # 同一目录里后写的覆盖先写的
     return picked
+
+
+def point_index(point):
+    """point-8 → 8；拿不到数字时退回目录名本身（只用于 labels.point 溯源）。"""
+    tail = point.rsplit("-", 1)[-1]
+    return int(tail) if tail.isdigit() else point
+
+
+def add_metric(metrics, seen, entry, dropped):
+    """写指标前先保证**键唯一**（附录 A：name+statistic+labels 不得重复）。
+
+    平台侧会因此判 `RESULT_INVALID`（kind 真跑实测：两点阶梯的预热阶段并发都是
+    `prefix_num`，labels 完全撞车）。撞了就留第一条、丢后来的并记进 notes——
+    绝不为了"看起来有数"而造一个假维度。
+    """
+    key = (entry["name"], entry["statistic"],
+           json.dumps(entry.get("labels") or {}, sort_keys=True, ensure_ascii=False))
+    if key in seen:
+        dropped.append("%s[%s]%s" % (entry["name"], entry["statistic"],
+                                     sorted(entry.get("labels", {}).items())))
+        return False
+    seen.add(key)
+    metrics.append(entry)
+    return True
 
 
 def build_metrics(events):
@@ -110,6 +134,8 @@ def build_metrics(events):
     metrics = []
     missing = []
     points = []
+    seen = set()
+    missing_duplicates = []
     for point, rows in events:
         config = next((r for r in rows if r.get("kind") == "config"), {})
         for row in rows:
@@ -118,7 +144,9 @@ def build_metrics(events):
             phase = row.get("phase") or "full"
             values = row.get("values") or {}
             concurrency = row.get("concurrency")
-            labels = {"concurrency": concurrency, "phase": phase}
+            # labels.point 是**必需的维度**：两点阶梯的预热阶段并发相同（都= prefix_num 或 dp），
+            # 少了它平台就判「metrics[i] 与前面重复」→ 整个 Task RESULT_INVALID（kind 实测）。
+            labels = {"concurrency": concurrency, "phase": phase, "point": point_index(point)}
             if labels.get("concurrency") is None:
                 labels["concurrency"] = "unknown"
             added = 0
@@ -135,8 +163,8 @@ def build_metrics(events):
                 sample = as_number(values.get("total_req"))
                 if sample is not None and unit in ("ms", "tokens_per_s", "req_per_s"):
                     entry["sample_size"] = int(sample)
-                metrics.append(entry)
-                added += 1
+                if add_metric(metrics, seen, entry, missing_duplicates):
+                    added += 1
             points.append({"point": point, "phase": phase, "concurrency": concurrency,
                            "metrics": added,
                            "exp_folder": row.get("exp_folder") or ""})
@@ -148,36 +176,46 @@ def build_metrics(events):
                 # 哨兵值（99999/9999）= 工具没从汇总表里抠到这个数。宁可写明「缺哪项」，
                 # 也不把哨兵当测量值写进 metrics。
                 missing.append("%s/%s 未解析到：%s" % (point, phase, ", ".join(absent)))
-    # 命中率：全量阶段（prefix 阶段的命中率是预热本身，只作证据）
-    hit = hit_rows(events, "full")
-    if hit is None:
+    # 命中率：**每个并发点都要有自己的命中率**（只取最后一点会把阶梯里其余点的证据丢掉）
+    picks = hit_events(events)
+    if not picks:
         missing.append("hit_rate（工具没算出命中率快照：--prefix_test 关闭，"
                        "或目标服务 /metrics 没有 vllm:prefix_cache_* 计数器）")
-    else:
-        _point, event = hit
+    for point, event in sorted(picks.items()):
         rows = event.get("rows") or []
         reason = event.get("reason") or ""
         all_pods = next((r for r in rows if r.get("scope") == "ALL_PODS"), None)
+        labels_base = {"concurrency": event.get("concurrency", point),
+                       "phase": "full", "point": point_index(point)}
         if all_pods is None:
-            missing.append(f"hit_rate（无可用快照：{reason or '没有 ALL_PODS 行'}）")
-        else:
-            for scope, hits_key, queries_key in (
-                    ("hbm", "hbm_hits", "hbm_queries"),
-                    ("external", "external_hits", "external_queries")):
-                hits = as_number(all_pods.get(hits_key))
-                queries = as_number(all_pods.get(queries_key))
-                if queries is None or queries <= 0:
-                    missing.append(f"hit_rate[{scope}]（queries=0，命中率无定义）")
-                    continue
-                metrics.append({
-                    "name": "hit_rate",
-                    "value": round(hits / queries * 100.0, 2),
-                    "unit": "percent",
-                    "statistic": "mean",
-                    "labels": {"concurrency": event.get("concurrency", "unknown"),
-                               "phase": "full", "scope": scope},
-                    "sample_size": int(queries),
-                })
+            missing.append("hit_rate@%s（无可用快照：%s）" % (point, reason or "没有 ALL_PODS 行"))
+            continue
+        external_ok = bool(all_pods.get("external_available") or
+                           event.get("external_available"))
+        for scope, hits_key, queries_key in (
+                ("hbm", "hbm_hits", "hbm_queries"),
+                ("external", "external_hits", "external_queries")):
+            if scope == "external" and not external_ok:
+                # vLLM 默认不暴露 external_prefix_cache_*：没有计数器 ≠ 命中率 0%
+                missing.append("hit_rate[external]@%s（目标服务没有 external_prefix_cache_* "
+                               "计数器，未上报而不是记 0）" % point)
+                continue
+            hits = as_number(all_pods.get(hits_key))
+            queries = as_number(all_pods.get(queries_key))
+            if queries is None or queries <= 0:
+                missing.append("hit_rate[%s]@%s（queries=0，命中率无定义）" % (scope, point))
+                continue
+            add_metric(metrics, seen, {
+                "name": "hit_rate",
+                "value": round(hits / queries * 100.0, 2),
+                "unit": "percent",
+                "statistic": "mean",
+                "labels": dict(labels_base, scope=scope),
+                "sample_size": int(queries),
+            }, missing_duplicates)
+    if missing_duplicates:
+        missing.append("键重复被丢弃的指标（name+statistic+labels 必须唯一，附录 A）："
+                       + "; ".join(missing_duplicates[:6]))
     return metrics, missing, points
 
 
@@ -324,6 +362,18 @@ def main(argv=None):
                 "npu_num", "length_mean", "length_std", "length_min", "length_max"):
         if config.get(key) not in (None, "", "none"):
             workload[key] = config[key]
+    # env/argv 传下来都是字符串，报告里按数值看更顺手（且与参数 schema 的声明一致）
+    for key in ("input_len", "output_len", "data_num", "prefix_num", "seed", "dp",
+                "repeat", "npu_num", "length_mean", "length_min", "length_max"):
+        value = workload.get(key)
+        if isinstance(value, str) and value.replace(".", "", 1).isdigit():
+            workload[key] = int(float(value))
+    rate = workload.get("request_rate")
+    if isinstance(rate, str):
+        try:
+            workload["request_rate"] = float(rate)
+        except ValueError:
+            pass
     workloads = env("AG_WORKLOAD_JSON").strip()
     if workloads:
         try:
@@ -332,7 +382,9 @@ def main(argv=None):
             pass
     if point_rows:
         workload["concurrency"] = point_rows[-1]["concurrency"]
-    workload["base_url"] = config.get("target", "")
+    # base_url 给**干净的服务地址**；target 里带的是 "(url) / host_ip" 这类寻址模式说明，
+    # 那是给人看的，放 notes 就够了。
+    workload["base_url"] = config.get("base_url") or config.get("target", "")
 
     error_obj = None
     if status != "succeeded":

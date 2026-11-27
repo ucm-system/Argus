@@ -1,0 +1,11 @@
+# Runner 镜像构建上下文 = 本目录（runners/aisbench-prefix），见 build/Dockerfile 头注释。
+# 排除本机跑测试留下的垃圾：它们会进镜像层（tool/__pycache__ 就是这样混进去的），
+# 既污染可复现性也让 "COPY tool /runner/tool" 的内容和仓库不一致。
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ipynb_checkpoints
+.data
+.local
+**/*.log
+.git

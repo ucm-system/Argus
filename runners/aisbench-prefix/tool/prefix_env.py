@@ -135,25 +135,29 @@ class Target:
         return f"[{self.host}]" if self.ip_version == 6 else self.host
 
     def base_url(self) -> str:
-        """给 ais_bench 的 `url` 字段（base url）。
+        """给 ais_bench 的 `url` 字段（服务根，**不带** OpenAI 的 `/v1` 版本段）。
 
-        ais_bench 用 `urljoin(base_url, "v1/chat/completions")` 拼接口，尾斜杠要很小心：
+        ais_bench 拼的是 `urljoin(base_url, "v1/chat/completions")`，而不同版本对
+        `base_url` 的处理不一样（两边都实测过的差异）：
 
-            http://h:8000        -> http://h:8000/v1/chat/completions        ✓
-            http://h:8000/v1     -> http://h:8000/v1/chat/completions        ✓（末段被替换）
-            http://h:8000/v1/    -> http://h:8000/v1/v1/chat/completions     ✗ 双 /v1
-            http://h:8000/openai -> http://h:8000/v1/chat/completions        ✗ 前缀被吃掉
-            http://h:8000/openai/-> http://h:8000/openai/v1/chat/completions ✓
+        | 写法 | ≤3.1.20260330 | 3.1.20260630（本镜像） |
+        |---|---|---|
+        | `http://h:8000`        | …/v1/chat/completions ✓ | …/v1/chat/completions ✓ |
+        | `http://h:8000/v1`     | …/v1/chat/completions ✓ | **…/v1/v1/chat/completions ✗ 404** |
+        | `http://gw/openai`     | …/v1/chat/completions ✗（前缀被吃掉） | …/openai/v1/chat/completions ✓ |
 
-        平台给的 `AG_SERVED_URL` 通常是 `.../v1`（不带尾斜杠），正好是第三种/第一种，
-        所以规则是：**以 v1 结尾就不补斜杠，其它路径前缀必须补斜杠**。
+        0630 的 `base_api._get_base_url()` 会给非空 path **补一个尾斜杠**
+        （`urlunparse(path + "/")`），于是 `.../v1` 变成 `.../v1/`，再 urljoin 就成了
+        双 `/v1`——kind 上真跑出来的 `error_info: "Not Found"` 就是它。
+        两个版本唯一都成立的写法是**给服务根**：去掉末尾的 `v1` 段；
+        若还有路径前缀（网关场景）则补尾斜杠，让 `urljoin` 不把前缀吃掉。
         """
         url = f"{self.effective_scheme}://{self.host_bracketed}:{self.effective_port}"
         path = (self.path or "").strip("/")
+        if path.lower().endswith("v1"):
+            path = path[:-2].strip("/")
         if path:
-            url += "/" + path
-            if not path.endswith("v1"):
-                url += "/"
+            url += "/" + path + "/"
         return url
 
     def use_url_field(self) -> bool:

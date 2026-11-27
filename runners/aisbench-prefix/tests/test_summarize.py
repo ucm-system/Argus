@@ -48,11 +48,23 @@ CONFIG_EVENT = {
 
 HIT_EVENT = {
     "kind": "hit", "phase": "full", "concurrency": "8",
+    "external_available": True,
     "rows": [
         {"scope": "10.0.0.1:18080/engine0", "hbm_hits": 900, "hbm_queries": 1000,
-         "external_hits": 10, "external_queries": 100},
+         "external_hits": 10, "external_queries": 100, "external_available": True},
         {"scope": "ALL_PODS", "hbm_hits": 900, "hbm_queries": 1000,
-         "external_hits": 20, "external_queries": 200},
+         "external_hits": 20, "external_queries": 200, "external_available": True},
+    ],
+    "skipped_pods": [], "reason": "",
+}
+
+# vLLM 默认只有 vllm:prefix_cache_*（external_* 是连接器才有的）——kind 真跑就是这个形态：
+# 上游会因为 8 个字典不齐而把整张命中率表丢掉，现在只丢 external 那一列。
+HIT_EVENT_HBM_ONLY = {
+    "kind": "hit", "phase": "full", "concurrency": "8", "external_available": False,
+    "rows": [
+        {"scope": "ALL_PODS", "hbm_hits": 500, "hbm_queries": 1000,
+         "external_hits": 0, "external_queries": 0, "external_available": False},
     ],
     "skipped_pods": [], "reason": "",
 }
@@ -189,6 +201,77 @@ class SummarizeTests(unittest.TestCase):
         data = run_summarize(self.root)
         self.assertEqual(self.metrics_by(data, "hit_rate"), [])
         self.assertIn("hit_rate", data["notes"])
+
+    def test_hit_rate_hbm_only_when_external_missing(self):
+        """只有 vllm:prefix_cache_* 的服务（kind 实测形态）：hbm 出数，external 说明而不是 0。"""
+        import copy
+        write_events(self.root, "8", [
+            dict(CONFIG_EVENT),
+            {"kind": "metrics", "phase": "full", "concurrency": "8", "values": FULL_METRICS},
+            copy.deepcopy(HIT_EVENT_HBM_ONLY),
+        ])
+        data = run_summarize(self.root)
+        hbm = self.metrics_by(data, "hit_rate", scope="hbm")
+        ext = self.metrics_by(data, "hit_rate", scope="external")
+        self.assertEqual(len(hbm), 1)
+        self.assertEqual(hbm[0]["value"], 50.0)          # 500 / 1000
+        self.assertEqual(ext, [], "external 没有计数器就不该编一个 0%")
+        self.assertIn("external_prefix_cache", data["notes"])
+
+    def test_hit_rate_per_point_in_sweep(self):
+        """阶梯里每个并发点都要有自己的命中率（kind 实测发现只取了最后一点）。"""
+        import copy
+        write_events(self.root, "2", [
+            dict(CONFIG_EVENT),
+            {"kind": "metrics", "phase": "full", "concurrency": "2", "values": FULL_METRICS},
+            dict(copy.deepcopy(HIT_EVENT_HBM_ONLY), concurrency="2"),
+        ])
+        write_events(self.root, "4", [
+            dict(CONFIG_EVENT),
+            {"kind": "metrics", "phase": "full", "concurrency": "4", "values": FULL_METRICS},
+            dict(copy.deepcopy(HIT_EVENT_HBM_ONLY), concurrency="4"),
+        ])
+        data = run_summarize(self.root)
+        hits = self.metrics_by(data, "hit_rate", scope="hbm")
+        self.assertEqual(len(hits), 2, "两点阶梯应出两条命中率")
+        self.assertEqual(sorted(str(item["labels"]["concurrency"]) for item in hits), ["2", "4"])
+
+    def test_metric_keys_are_unique(self):
+        """平台侧硬规则：`name+statistic+labels` 在同一 result.json 内必须唯一，
+        否则整个 Task 判 RESULT_INVALID（kind 真跑就是这么翻车的）。
+        两点阶梯的预热阶段并发相同（都= prefix_num），必须靠 labels.point 区分。
+        """
+        import copy
+        import json
+        from collections import Counter
+        for point, conc in (("2", "2"), ("4", "4")):
+            write_events(self.root, point, [
+                dict(CONFIG_EVENT),
+                {"kind": "metrics", "phase": "prefix", "concurrency": "1",
+                 "values": dict(FULL_METRICS, max_cc=1, cc=1.0)},
+                copy.deepcopy(HIT_EVENT_HBM_ONLY) | {"concurrency": conc},
+                {"kind": "metrics", "phase": "full", "concurrency": conc,
+                 "values": dict(FULL_METRICS, max_cc=int(conc))},
+            ])
+        data = run_summarize(self.root)
+        keys = Counter((m["name"], m["statistic"],
+                        json.dumps(m.get("labels") or {}, sort_keys=True, ensure_ascii=False))
+                       for m in data["metrics"])
+        dupes = [key for key, count in keys.items() if count > 1]
+        self.assertEqual(dupes, [], f"有重复的指标键：{dupes[:2]}")
+        self.assertGreater(len(data["metrics"]), 30)
+        self.assertEqual(data["status"], "succeeded")
+
+    def test_workload_base_url_is_clean(self):
+        write_events(self.root, "8", [
+            dict(CONFIG_EVENT, base_url="http://10.0.0.9:8000/",
+                 target="http://10.0.0.9:8000/（url）", output_len="16", seed="7"),
+            {"kind": "metrics", "phase": "full", "concurrency": "8", "values": FULL_METRICS},
+        ])
+        data = run_summarize(self.root)
+        self.assertEqual(data["workload"]["base_url"], "http://10.0.0.9:8000/")
+        self.assertEqual(data["workload"]["output_len"], 16)
+        self.assertEqual(data["workload"]["seed"], 7)
 
     def test_artifacts_are_relative_and_hashed(self):
         directory = write_events(self.root, "8", [dict(CONFIG_EVENT)])

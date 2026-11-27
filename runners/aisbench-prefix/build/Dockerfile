@@ -40,6 +40,9 @@
 FROM python:3.10-slim-bookworm
 
 ARG AIS_BENCH_VERSION=3.1.20260630
+# torch 钉死到 CPU 轮子（两个架构都有：torch-2.14.1+cpu-cp310-cp310-manylinux_2_28_{x86_64,aarch64}.whl）。
+# 用 `==<ver>+cpu` 而不是裸 `torch`：裸名在 PyPI 上是 CUDA 版（x86 会拖 nvidia-* 数 GB）。
+ARG TORCH_VERSION=2.14.1
 ARG RUNNER_UID=10001
 ARG RUNNER_GID=10001
 # 镜像源可按环境覆盖（内网构建时指到镜像站；默认 PyPI）。
@@ -83,7 +86,15 @@ RUN sed -i 's/\r$//' /runner/run.sh /runner/summarize.py \
 # ---- ais_bench：先 CPU 版 torch，再装 ais-bench-benchmark ----------------------
 # torch 单独先装的原因：PyPI 上的 x86_64 torch wheel 会拖 CUDA 全家桶（数 GB），
 # 而本 Runner 只用 API 压测。装完 torch 后 ais_bench 的依赖检查会直接满足。
-RUN python -m pip install --index-url "${TORCH_INDEX_URL}" "torch" \
+#
+# **两条索引都要给**：只写 `--index-url ${TORCH_INDEX_URL}` 时，torch 的依赖
+# （typing-extensions / filelock / fsspec …）也只能从 pytorch 索引找，那里某些版本
+# 只有 sdist → pip 转去 build，而 build backend（flit_core）同样只在 PyPI 上，
+# 于是 `No matching distribution found for flit_core<4,>=3.11` 直接构建失败（本机踩过）。
+# `+cpu` 这个本地版本号 PyPI 上没有，所以主索引给 pytorch、补充索引给 PyPI 是安全的。
+RUN python -m pip install \
+      --index-url "${TORCH_INDEX_URL}" --extra-index-url "${PIP_INDEX_URL}" \
+      "torch==${TORCH_VERSION}+cpu" \
  && python -m pip install --index-url "${PIP_INDEX_URL}" \
       --extra-index-url "${TORCH_INDEX_URL}" \
       "ais-bench-benchmark==${AIS_BENCH_VERSION}" \

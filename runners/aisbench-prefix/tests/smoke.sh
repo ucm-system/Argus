@@ -178,6 +178,27 @@ if [ -f "${RESULT}" ]; then
     has_metric "${RESULT}" hit_rate scope=hbm phase=full && ok "hit_rate(hbm) 有值" || bad "缺 hit_rate"
     has_metric "${RESULT}" output_throughput scope=per_device && ok "单卡吞吐有值" || bad "缺 per_device 吞吐"
     [ "$(jqa "${RESULT}" runner.name)" = "aisbench-prefix" ] && ok "runner.name 正确" || bad "runner.name=$(jqa "${RESULT}" runner.name)"
+    # 平台硬规则：name+statistic+labels 必须唯一，否则 Task 直接 RESULT_INVALID（kind 实测）
+    dup=$("${PYTHON}" - "${RESULT}" <<'PYDUP'
+import json, sys
+from collections import Counter
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+keys = Counter((m["name"], m["statistic"],
+                json.dumps(m.get("labels") or {}, sort_keys=True, ensure_ascii=False))
+               for m in data["metrics"])
+print(sum(1 for _k, c in keys.items() if c > 1))
+PYDUP
+)
+    [ "${dup}" = "0" ] && ok "指标键唯一（不会被判 RESULT_INVALID）" || bad "有 ${dup} 个重复指标键"
+    hit_points=$("${PYTHON}" - "${RESULT}" <<'PYHITS'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+points = {m["labels"].get("point") for m in data["metrics"]
+          if m["name"] == "hit_rate" and m["labels"].get("phase") == "full"}
+print(len(points))
+PYHITS
+)
+    [ "${hit_points}" -ge 2 ] && ok "两点各自都有命中率（point=${hit_points}）" || bad "命中率只覆盖 ${hit_points} 个点"
     [ "$(jqa "${RESULT}" metrics[].labels[].phase)" != "" ] && ok "metrics 带 labels"
     n_art=$(jlen "${RESULT}" artifacts)
     [ "${n_art}" -ge 4 ] && ok "artifacts ${n_art} 项" || bad "artifacts 太少（${n_art}）"
@@ -200,6 +221,22 @@ grep -q -- '--config-dir' "${CASE_OUT}/stdout.log" \
 grep -q 'hit_rate（' "${CASE_OUT}/result.json" 2>/dev/null \
     && ok "prefix_test=false 时 notes 说明没有命中率" \
     || bad "prefix_test=false 却没在 notes 里说明 hit_rate 缺失"
+
+echo
+echo "== A3 只读文件系统安全（kind 实测踩过的 EROFS）=="
+# /runner/tool 在平台 Job 里位于只读根文件系统：任何以写模式打开工具目录内文件的做法
+# 都会 OSError: [Errno 30]（上游的 open('default_api.py','r+') 就是这样）。
+if grep -RnoE "open\((os\.path\.join\()?[^)]*TOOL_DIR[^)]*['\"](r\+|w|a)[+]?['\"]" "${RUNNER_DIR}/tool" >/dev/null 2>&1; then
+    bad "工具里有以写模式打开 TOOL_DIR 文件的地方（只读根文件系统上必然 EROFS）"
+    grep -RnoE "open\((os\.path\.join\()?[^)]*TOOL_DIR[^)]*['\"](r\+|w|a)[+]?['\"]" "${RUNNER_DIR}/tool" | head -3
+else
+    ok "没有以写模式打开 TOOL_DIR 文件的代码"
+fi
+if grep -RnoE "open\(['\"][^'\"]*['\"], *['\"](r\+|w\+|a\+)['\"]" "${TOOL_DIR}/save_file.py" "${TOOL_DIR}/data_picker.py" "${TOOL_DIR}/cal_prefix_hit_rate.py" >/dev/null 2>&1; then
+    bad "上游文件里有写模式 open 落在 CWD 之外？逐条核对"
+else
+    ok "写操作只落在 CWD（= 该点产物目录）"
+fi
 
 echo
 echo "== B 可复现（同参数同 seed 两次 → 数据集逐字节相同）=="
