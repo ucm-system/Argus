@@ -198,7 +198,8 @@ python:3.10-slim-bookworm                    # 多架构官方基础镜像
   先装 CPU 版后，ais_bench 的依赖检查直接满足。镜像约 1.5 GB 量级。
 - **arm64 可行性**：依赖里唯一需要预编译产物的 `tree_sitter_languages` 在 PyPI 上有
   `manylinux_2_17_aarch64` wheel（cp310/311/312 都有），所以 arm64 侧不需要源码编译。
-  （CI 里 arm64 走 qemu，构建时间明显长于 amd64——这是双架构的固有代价。）
+  （CI 里 arm64 腿跑**原生** `ubuntu-24.04-arm` runner——public 仓库免费，不再走 QEMU；
+  详见 `.github/workflows/release.yml` 头注释。）
 - **版本钉死**（§6.2）：`ARG AIS_BENCH_VERSION=3.1.20260630`，禁止 latest；
   镜像源可用 `ARG PIP_INDEX_URL` / `ARG TORCH_INDEX_URL` 覆盖给内网构建。
 - 构建期会自检：`ais_bench --help` 能跑、`__version__` 以 `3.1` 开头、
@@ -290,7 +291,8 @@ docker build -f runners/aisbench-prefix/build/Dockerfile \
   -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 \
   runners/aisbench-prefix
 
-# 多架构（= release.yml 的做法；arm64 走 qemu，慢）
+# 多架构（= release.yml 的做法：amd64 腿跑 ubuntu-latest、arm64 腿跑 ubuntu-24.04-arm
+# 原生构建 + imagetools create 合清单；本机单机验证用 --platform --load 走 binfmt）
 docker buildx build --platform linux/amd64,linux/arm64 --push \
   -f runners/aisbench-prefix/build/Dockerfile \
   -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 runners/aisbench-prefix
@@ -394,8 +396,10 @@ docker run --rm --entrypoint bash \
    （`executor/render.go` 没给 Job 设这个变量）；本地跑可以自行 `-e AG_RUNNER_IMAGE=…`。
 9. **`work_path`/`dataset_path` 必须在 `/tmp` 或 `/workspace/output` 下**（平台只读根文件系统）。
    `work_path` 可写性探测失败时直接 `failed`，不会硬跑。
-10. **arm64 镜像构建慢**：qemu 下要解 torch 与依赖 wheel。发布矩阵里这一步比 amd64 慢一个量级，
-    属预期（不是降级——`release.yml` 会校验清单里确实有两个平台）。
+10. **arm64 构建走原生 runner**：release.yml 的 arm64 腿跑 `ubuntu-24.04-arm`（public 仓库
+    免费），不再是 QEMU 模拟——torch/pandas 这类重依赖的解依赖从几十分钟降到分钟级。
+    本机 `--platform linux/arm64`（binfmt 模拟）构建过一次作为 Dockerfile 的 arm 安全性证据，
+    CI 上是原生速度。
 
 ## 维护者验证清单
 
@@ -426,6 +430,7 @@ docker build -f runners/aisbench-prefix/build/Dockerfile \
 | 契约 | `tests/validate_result_schema.py` | RESULT SCHEMA **PASS**（成功/全点失败/部分失败/超时/参数错误全部过 openapi `Result`，含 `ErrorCode` enum） |
 | 发布镜像 | `docker build -f build/Dockerfile …`（PyPI 清华镜像源） | 0.1.1，**627 MB**（python:3.10-slim + CPU torch 2.14.1 + ais_bench 3.1.0）；构建期自检过（`ais_bench --help`、uid 10001、可写目录） |
 | **kind 真跑（真 ais_bench 3.1.20260630 + mock 服务 + 真 tokenizer）** | 平台 API 提交 Task，`service:` 外接模式 + `precheck: auto`，镜像先 `load-image.ps1` 灌进节点 | 两条链路都验证过，见下 |
+| arm64 构建 | `docker buildx build --platform linux/arm64 --load …`（本机 binfmt 模拟） | **成功**：镜像 `architecture=arm64`，容器内 `uname -m=aarch64`、`ais_bench 3.1.0`、`torch 2.14.1+cpu`/`pandas` 导入正常、uid 10001；pip 全程解析 aarch64 wheel 无需源码编译（几个无 wheel 的小包在模拟下 sdist 编译也过了）。CI 上由原生 `ubuntu-24.04-arm` 跑，分钟级 |
 
 kind 真跑细节（Task `t-20261127-9C8W`，runner `aisbench-prefix@0.1.2`）：
 
@@ -459,8 +464,6 @@ kind 真跑发现并当场修掉的问题（都已带回归测试）：
 
 ## 未做 / 后续
 
-- **arm64 镜像构建**：Dockerfile 是双架构安全的（torch/ais_bench wheel 都有 aarch64），但本机
-  没跑 `--platform linux/arm64` 全量构建（qemu 下 torch 解依赖很慢），交给 release.yml 发版时验证。
 - **推送 GHCR**：镜像只在本地 kind 里（`load-image.ps1` 灌入），未 `docker push`——按 §6.2
   由 CI 发版路径推送。
 - **PR**：分支 `feat/aisbench-prefix-runner` 待评审合入。
