@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '镜像标签；留空使用各自 runner.yaml 的 version（例如 0.3.3）'
+        description: '镜像标签；留空使用各自 runner.yaml 的 version（例如 0.3.5）'
         required: false
         default: ''
         type: string

@@ -20,6 +20,8 @@ Docker Hub 的构建源码固定来自远端 `temp` 分支。每次 workflow 先
 
 原生路径参数：num_prompts、num_warmups、temperature、ignore_eos、output_len、concurrency、request_rate。默认低并发，temperature=0.01、ignore_eos=true 对齐 Jenkins；不改变既有 GSM8K 和生成数据路径的缺省值。显式给出的其它模式参数必须拒绝，不能看似接受却不生效。
 
+0.3.5（temp）：为支持 VS Code 附加容器后的交互终端，aisbench 用户的 passwd Shell 从 /usr/sbin/nologin 改为 /bin/bash，并设置 SHELL=/bin/bash。构建时检查当前用户的 Shell 路径和可执行权限；UID/GID 仍为 10001，平台入口仍为 /runner/run.sh。0.3.4 已由 genet 分支的基础镜像适配使用，本次跳过该版本以区分产物。旧容器可由宿主机用 docker exec -u root 调用 usermod -s /bin/bash aisbench，然后重连 VS Code；只读根文件系统应通过 VS Code 远程终端配置指定 Bash，或重建容器使用新镜像。
+
 prefix 仍用现有生成、预热、正式测量流程。增加 `test_cases` 接收旧六列数组 [input_len, output_len, num_requests, hit_rate百分数, concurrency, seed]，转换为私有前缀 rounds；预热输出 max(1, output_len//10)，并发与正式阶段一致，默认 vllm_prompt 指标口径。PD 分离的 POD_INFO 对应 pod_info/metrics_endpoint，逐 endpoint 保留，不自动发现部署形态。
 
 输出：平台 result.json；原始日志、CSV、预测文件保持在本次 raw/native/aisbench 下；额外 accuracy.csv（原始汇总列）、performance_flat.csv（旧 label_statistic 表头）、legacy_results.json（build/type/status/data/extra_info，build 使用平台 task_id）。多份性能表逐份保存并加 source 防止覆盖。数值保留符号和科学计数法，缺失不填 0。退出非零、无有效汇总或汇总缺成绩均失败，仍留原文件。原生路径依赖 AISBench 自身的请求和评分判定，明确记录验证范围，不声称具备旧 GSM8K 逐题审计。

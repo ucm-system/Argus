@@ -1,5 +1,5 @@
 name: aisbench-acc
-version: 0.3.3
+version: 0.3.5
 display_name: AISBench 精度测试
 description: AISBench 原生数据集精度测试，保留原始汇总和预测；兼容 GSM8K 逐题审计路径。
 role: test
@@ -7,7 +7,7 @@ on_failure: continue
 entry:
 - /runner/run.sh
 input_format: jsonl
-image: ghcr.io/ucm-system/argus-runner-aisbench-acc:0.3.3
+image: ghcr.io/ucm-system/argus-runner-aisbench-acc:0.3.5
 resources:
   cpu: '4'
   memory: 8Gi

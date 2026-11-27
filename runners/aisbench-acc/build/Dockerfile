@@ -7,11 +7,12 @@ COPY build/requirements.txt /runner/build/requirements.txt
 RUN python3 -m pip install --no-cache-dir -r /runner/build/requirements.txt
 COPY . /runner
 RUN groupadd --gid 10001 aisbench \
- && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin aisbench \
+ && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /bin/bash aisbench \
  && chmod 0755 /runner/run.sh /runner/run-local.sh \
  && mkdir -p /workspace/output /data /models /benchmark/ais_bench/datasets \
  && chown 10001:10001 /workspace/output
 ENV HOME=/tmp \
+    SHELL=/bin/bash \
     USER=aisbench \
     LOGNAME=aisbench \
     TORCH_HOME=/tmp/torch \
@@ -30,5 +31,5 @@ ENV HOME=/tmp \
 USER 10001:10001
 WORKDIR /workspace
 # Exercise CLI imports with the same user as the running container.
-RUN python3 -c "import os, pwd; assert pwd.getpwuid(os.getuid()).pw_name == 'aisbench'; from testplane_model import Chat; from ais_bench.benchmark.cli.workers import WORK_FLOW"
+RUN python3 -c "import os, pwd; user = pwd.getpwuid(os.getuid()); assert user.pw_name == 'aisbench'; assert user.pw_shell == os.environ['SHELL'] == '/bin/bash'; assert os.access(user.pw_shell, os.X_OK); from testplane_model import Chat; from ais_bench.benchmark.cli.workers import WORK_FLOW"
 ENTRYPOINT ["/runner/run.sh"]

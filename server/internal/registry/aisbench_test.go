@@ -17,7 +17,7 @@ func TestAISBenchRunnersRegisterAndValidateExamples(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if spec.Name != name || spec.Version != "0.3.3" {
+			if spec.Name != name || spec.Version != "0.3.5" {
 				t.Fatalf("unexpected runner identity: %s %s", spec.Name, spec.Version)
 			}
 			if issues := ValidateInput(spec, spec.Placeholder); len(issues) != 0 {

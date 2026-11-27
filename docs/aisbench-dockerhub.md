@@ -7,14 +7,14 @@ Workflow 文件是 `.github/workflows/aisbench-dockerhub.yml`，在 Actions 页�
 1. 仓库 Settings → Secrets and variables → Actions → Repository secrets 配好 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`。用户名填写 Docker Hub 用户名，Token 需要有写入对应镜像仓库的权限。
 2. 将最新构建代码推送到远端 `temp` 分支。另将 workflow 文件通过 PR 合入默认分支，以便 GitHub 显示手动运行入口；构建源码仍从 `temp` 读取。
 3. 打开 Actions → **AISBench Docker Hub** → **Run workflow**。界面的分支选项决定读取哪一份 workflow，可选择包含本 workflow 的 `temp`；本 workflow 内部固定检出 `temp` 的源码。
-4. `tag` 留空即可使用各自 `runner.yaml` 中的版本，当前都是 `0.3.3`；也可以填写 `0.3.3-test1`。填写的标签原样使用，不会自动去掉 `v`。不允许填写 `latest` 或以 `sha-` 开头的标签。
+4. `tag` 留空即可使用各自 `runner.yaml` 中的版本，当前都是 `0.3.5`；也可以填写 `0.3.5-test1`。填写的标签原样使用，不会自动去掉 `v`。不允许填写 `latest` 或以 `sha-` 开头的标签。
 5. 等待两个任务都成功，分别打开任务 Summary，复制镜像地址或 digest。
 
 例如 Docker Hub 用户名为 `yourname`，默认生成：
 
 ```text
-docker.io/yourname/argus-runner-aisbench-acc:0.3.3
-docker.io/yourname/argus-runner-aisbench-perf:0.3.3
+docker.io/yourname/argus-runner-aisbench-acc:0.3.5
+docker.io/yourname/argus-runner-aisbench-perf:0.3.5
 ```
 
 每次运行先解析一次 `temp` 的提交 SHA，两个镜像都构建这一份源码。每个镜像另有 `sha-<完整源码提交 SHA>` 标签，镜像 revision 和 Summary 也记录这个 SHA。重复发布同一个标签会覆盖该标签，固定部署推荐使用 Summary 中的 `image@sha256:...`。两个构建任务独立，一个失败时另一个仍可能发布成功；以各自结果为准。
@@ -22,7 +22,7 @@ docker.io/yourname/argus-runner-aisbench-perf:0.3.3
 也可以使用 GitHub CLI：
 
 ```bash
-gh workflow run aisbench-dockerhub.yml --ref temp -f tag=0.3.3-test1
+gh workflow run aisbench-dockerhub.yml --ref temp -f tag=0.3.5-test1
 ```
 
 这里的 `temp` 必须已经推送到远端，workflow 也必须已经进入默认分支。
@@ -39,9 +39,22 @@ gh workflow run aisbench-dockerhub.yml --ref temp -f tag=0.3.3-test1
 
 ## 发布后怎样接入平台
 
+镜像中的 aisbench 用户使用 `/bin/bash`，支持 VS Code 附加容器后打开终端。旧容器若报 `/usr/sbin/nologin failed to launch`，在宿主机执行 `docker exec -u root 容器名 usermod -s /bin/bash aisbench`，再断开并重连 VS Code。该命令只修改当前容器，重建后需使用修复后的镜像。
+
+若容器以只读根文件系统运行，无法修改 /etc/passwd，可在 VS Code 的容器远程设置中指定终端配置，再新建终端（参见 [Terminal Profiles](https://code.visualstudio.com/docs/terminal/profiles)）：
+
+```json
+{
+  "terminal.integrated.profiles.linux": {
+    "bash": { "path": "/bin/bash" }
+  },
+  "terminal.integrated.defaultProfile.linux": "bash"
+}
+```
+
 发布镜像不会自动修改 `runner.yaml`。当前注册文件仍指向 GHCR；使用 Docker Hub 镜像时，把相应 `image` 改成 Summary 给出的地址或 digest，同时递增 Runner 的 `version`，按仓库约定同步版本引用和测试，再重启 argusd 注册。
 
-本地联调可通过 `TESTER_IMAGE=docker.io/yourname/argus-runner-aisbench-acc:0.3.3`（性能使用 perf 镜像）指定 `run-local.sh` 使用的镜像。
+本地联调可通过 `TESTER_IMAGE=docker.io/yourname/argus-runner-aisbench-acc:0.3.5`（性能使用 perf 镜像）指定 `run-local.sh` 使用的镜像。
 
 数据集仍由系统挂到 `/benchmark/ais_bench/datasets`，镜像设置 `AIS_BENCH_DATASETS_CACHE=/benchmark`，无需在 workflow 上传数据集。模型目录与输出目录也在运行时挂载。私有 Docker Hub 镜像还需要集群具备相应拉取凭据，GitHub Secrets 不会自动传给集群。
 
