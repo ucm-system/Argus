@@ -1,0 +1,344 @@
+name: aisbench-prefix
+version: 0.1.4
+display_name: AISBench 前缀缓存性能测量
+description: |
+  用 AISBench（ais_bench）压被测推理服务，量**前缀缓存场景**下的延迟与吞吐，并按目标服务
+  /metrics 的 vllm:prefix_cache_* 计数器差分给出命中率。封装外部仓库
+  aisbench_auto_tools_prefix（vendored 在 tool/，来源 commit 与逐条本地改动见 tool/VENDORED.md）。
+
+  一次调用 = 一个负载形态（输入/输出长度、前缀重复率、数据条数、seed）× 一组并发点。
+  `concurrency` 给多个值时在同一 Job 内**按顺序**逐点压（点与点之间不重新部署服务），
+  默认每点换 seed（seed+i）并各自预热前缀，因此各点的前缀互不相同、命中率可比。
+  本 Runner 只回答「这个负载形态下，各并发的 TTFT/TPOT/E2E/吞吐/命中率是多少」，
+  不判定达标与否——是否合格由下游消费指标。
+
+  上游用法是「编辑 config.py → 跑 python aisbench_test.py」。Runner 的根文件系统只读，
+  所以 tool/config.py 被改写成**每一项都可被 AGP_* 环境变量覆盖**：站点信息
+  （被测地址、模型名、权重路径、数据集目录、aisbench 源码根、鉴权）全部走环境变量，
+  负载信息走命令行，调用方**不需要也不应该改任何配置文件**。
+  被测服务与模型是公共参数（§5.4.1）：AG_SERVED_URL / AG_SERVED_MODEL_NAME / AG_MODEL_PATH
+  由平台注入，不进输入文件。**AG_MODEL_PATH 是硬要求**（kind 真跑实测）：ais_bench 的
+  default_perf 汇总器自己会 `load_tokenizer(模型配置的 path)` 来算每条请求的 token 数，
+  缺了或路径不存在会在压测跑完之后才报 UTILS-CFG-002 / UTILS-FILE-003，白烧几分钟——
+  所以本 Runner 提前拦下并给 VALIDATION_ERROR。部署模式由 service-deploy 导出；
+  外接模式（`service:` 块）平台目前不注入，可在 Task 里给 `env: {AG_MODEL_PATH: /models/<模型名>}`
+  或按 D-63 配统一共享挂载。
+  另外 work_path 别写 /benchmark：平台 Job 根文件系统只读，run.sh 用
+  AIS_BENCH_DATASETS_CACHE + --config-dir 把 /tmp 下的影子源码根接给 ais_bench。
+
+  相对上游的四处行为修正（前三条是这轮反馈，第四条来自 kind 真跑）：
+  1. **picked_ids.txt 自动清理**：上游把挑题记录写在 CWD 且只增不减，攒够次数就报
+     `ERROR 生成数据集失败，请清空picked ids`（要人工删文件）。现在记录走 AGP_STATE_DIR，
+     默认每次运行前清掉（keep_pick_state=true 可保留），并且失败时**不再 exit(0)**
+     ——上游那种「报错但退出码 0」会让 Task 变成 succeeded + 零结论。
+  2. **seed 真的可复现**：上游 `--seed` 只喂给「前缀后插入的 3 个随机 token」，
+     GSM8K 挑题走的是未播种的全局 random → 同参数两次跑出的数据集不同。现在在数据集生成
+     入口先 `random.seed(seed)`，配合默认清理挑题记录，同一份输入两次跑得到同一份数据集。
+  3. **ais_bench 失败不再被 tee 吞掉**：上游用 `shell=True` 跑
+     `ais_bench … | tee … | tee …`，取的是最后一个 tee 的退出码，ais_bench 崩了也返回 0。
+     现在走 `bash -o pipefail`，并按进程组支持单点超时（run_timeout）。
+  4. **命中率与指标键**（kind 真跑发现）：上游要求 vllm 与 external 两组计数器齐全，而
+     vLLM 默认只暴露 `vllm:prefix_cache_*` → 真跑时整张命中率表被丢掉；现在 hbm 齐就出
+     hbm 命中率，external 缺失写进 notes（不编 0）。每个指标带 `labels.point`：平台硬规则
+     是 `name+statistic+labels` 必须唯一，两点阶梯的预热阶段并发相同（都= prefix_num），
+     少了这个维度整个 Task 会被判 RESULT_INVALID。
+
+role: test
+
+# 单个并发点失败（服务抖动、单点超时）不该终止整个 Task：阶梯里其余点的数仍然可用。
+# 只有 pre_check 角色才必须 abort_task（§7.3）。
+on_failure: continue
+
+entry: ["/runner/run.sh"]
+input_format: jsonl
+
+# 镜像由 CI 构建产出（见 build/Dockerfile 与 README 的构建节）。平台与任何运行环境都不 build（§6.2）。
+# 官方 ghcr.io/aisbench/aisbench_benchmark 的 tag 是**单架构**的（…-x86_64 / …-aarch64 各一份），
+# 直接 FROM 它过不了 release.yml 的双架构清单校验，所以这里按上游 docker/ubuntu/Dockerfile 的思路
+# 自己打：python:3.10-slim（多架构）+ `pip install ais-bench-benchmark==3.1.20260630`。
+# 本 Runner 只用 ais_bench 的 API 压测路径（HTTP 打被测服务），不需要镜像里的 NPU/CANN 栈。
+image: ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.4
+
+resources:
+  cpu: "2"
+  memory: "4Gi"
+  gpu: { resource: nvidia.com/gpu, count: 0 }
+
+# 必须独占该服务（§6.7）：本工具会按并发点持续打满目标服务；并且前缀缓存命中率
+# 直接取决于「这个服务此刻的 KV cache 里有什么」，与任何其他测量并行都会互相污染。
+concurrency:
+  endpoint_exclusive: true
+
+# 数据集与权重都不由平台托管（§10.4）：路径是不透明字符串，需要哪个共享存储由
+# Execution Profile 决定，所以这里不声明 mounts（写死 mount_path 等于把某个 Profile
+# 的目录布局钉进契约）。约定：
+#   model_path：公共参数，走 AG_MODEL_PATH（如 /models/Qwen3-32B，D-63 统一共享挂载）
+#   dataset_path：默认 <output>/prefix_out/datasets（产物目录，可写、会被收集）
+#   work_path：默认 /tmp/prefix-ws（**必须可写**，别写 /benchmark——平台根文件系统只读）
+mounts: []
+
+exports: []
+# 被测服务地址与模型名由平台以公共参数环境变量注入（§5.4.1）：
+#   AG_SERVED_URL / AG_SERVED_MODEL_NAME（外接模式来自 Manifest service 块，部署模式来自 deploy 导出）
+consumes: [AG_SERVED_URL, AG_SERVED_MODEL_NAME]
+
+# placeholder 必须与 input_format 同格式（D-67）：jsonl = 单行完整 JSON 对象。
+placeholder: '{"concurrency":[8,16,32],"input_len":2048,"output_len":1024,"data_num":128,"request_rate":0,"dataset_type":"prefix_cache","repeat_rate":"90%","prefix_num":1,"dp":1,"prefix_test":true,"seed":1,"seed_per_point":true,"work_path":"/tmp/prefix-ws"}'
+
+parameters:
+  - name: concurrency
+    type: array
+    required: true
+    description: |
+      目标并发（写进 ais_bench 模型配置的 batch_size）。**必填**，JSONL 里给整数数组
+      （推荐，Runner 在同一 Job 内按顺序逐点压）；单个点也写成数组，如 `[8]`。
+      多值是阶梯：`[8,16,32]` 会跑三个点，共用同一份数据集生成逻辑但默认每点换 seed。
+      想让每个并发点是**独立执行行**（各自的日志/状态），就只写一个点、在 manifest 里
+      排多个 runner 条目——但那样每点都要重新部署/重新预热，命中率不可比。
+      要压出真实并发上限，配合 `request_rate: 0`（不限速）与 `data_num >= 4 × 最大并发`。
+    example: [8, 16, 32]
+
+  - name: input_len
+    type: integer
+    required: false
+    default: 2048
+    description: "输入 token 长度（生成数据集的目标长度）。默认 2048；变长场景用它当基准值，实际长度由 length_* 决定。"
+    example: 2048
+
+  - name: output_len
+    type: integer
+    required: false
+    default: 1024
+    description: "输出 token 长度（ais_bench max_out_len）。默认 1024；纯 prefill 场景常取 1（此时 TPOT 没有意义）。"
+    example: 1024
+
+  - name: data_num
+    type: integer
+    required: false
+    default: 64
+    description: "数据集条数 = 每点发送的请求数。默认 64；测并发上限时建议 `>= 4 × 最大并发`，否则在飞请求数压不满目标并发，`measured_concurrency` 会明显低于 concurrency。上限受 GSM8K 题库容量约束（约 1300 行，重复行会被工具复用）。"
+    example: 160
+
+  - name: request_rate
+    type: number
+    required: false
+    default: 0
+    description: "请求发送频率（RPS，写进 ais_bench 的 request_rate）。默认 0 = 不限速。要测吞吐/并发上限就必须 0；非 0 时「在飞请求数」被 频率×时延 卡住，测到的并发不是目标并发。"
+    example: 0
+
+  - name: dataset_type
+    type: string
+    required: false
+    default: prefix_cache
+    description: "数据集形态。prefix_cache（默认）= 公共前缀 + 3 个随机 token + 后缀；normal = 不带公共前缀（用来拿「无命中」的基线对照）。"
+    example: prefix_cache
+
+  - name: repeat_rate
+    type: string
+    required: false
+    default: "90%"
+    description: "前缀重复率：每条请求前多少比例的 token 能落在 KV cache 里。支持 `90%` 或 `0.9`。默认 90%。"
+    example: "90%"
+
+  - name: prefix_num
+    type: integer
+    required: false
+    default: 1
+    description: "前缀**种类**数（1 = 所有请求共用一条前缀；3 = 三种前缀轮着分）。默认 1。注意它受 GSM8K 题库容量限制：挑不出 prefix_num 条不重复的行时本 Runner 报「数据集生成失败」并失败退出。"
+    example: 1
+
+  - name: dp
+    type: integer
+    required: false
+    default: 1
+    description: "dp 域数量。前缀预热阶段并发取 dp（dp=1 时取 prefix_num），保证每个 dp 域都吃到预热；前缀数据集会写 dp×prefix_num 行。PD 分离/数据并行服务按实际 P 节点数填。"
+    example: 1
+
+  - name: prefix_test
+    type: boolean
+    required: false
+    default: true
+    description: "全量数据集之前先跑一遍前缀预热。**关掉就没有命中率**：上游只在开启时抓 /metrics 快照，关闭时 result.json 不含 hit_rate（其它指标照常）。默认 true。"
+    example: true
+
+  - name: seed
+    type: integer
+    required: false
+    default: 1
+    description: |
+      随机种子。默认 1。0 = 不播种（**不可复现**，留给「每次都要新数据」的场景）。
+      >0 时本 Runner 保证同输入同数据集：既播给 3 个随机 token（上游原有行为），
+      也播给 GSM8K 挑题（上游漏了，见 tool/VENDORED.md）。
+    example: 1
+
+  - name: seed_per_point
+    type: boolean
+    required: false
+    default: true
+    description: |
+      阶梯里每个并发点用 `seed + 点序号`，即各点前缀互不相同、数据集各自生成（落盘在
+      datasets/c<并发>/）。关掉则所有点复用同一份数据集（datasets/shared/，省 tokenizer 时间），
+      但代价是**后一个点跑在前一个点已经焐热的 cache 上**，命中率逐点偏高——只在
+      dataset_type=normal 或你明确要「同数据集不同并发」时才关。
+      给了 `dataset`（现成数据集）时本参数被强制视为 false。
+    example: true
+
+  - name: dataset
+    type: string
+    required: false
+    description: "现成数据集的容器内绝对路径（限 gsm8k 格式，每行 {\"question\":...}）。给了就跳过生成、不再需要 tokenizer；`seed_per_point` 同时失效。"
+    example: "/data/medium2.jsonl"
+
+  - name: dataset_path
+    type: string
+    required: false
+    description: "生成数据集的落盘根目录（容器内绝对路径，需可写）。默认 `<output>/prefix_out/datasets`（在产物目录里，会被平台收集）。长上下文想跨 attempt 复用就指到 Profile 挂载的共享存储。"
+    example: "/mnt/nfs/prefix-datasets"
+
+  - name: work_path
+    type: string
+    required: false
+    default: /tmp/prefix-ws
+    description: |
+      ais_bench 的「影子源码根」：工具往它下面写
+      `ais_bench/benchmark/configs/models/vllm_api/vllm_api_chat_temp.py`（模型配置）与
+      `ais_bench/datasets/gsm8k/{train,test}.jsonl`（数据集软链）。默认 `/tmp/prefix-ws`，
+      目录不存在时 run.sh 会 mkdir -p；建不出来或不可写 → 直接 failed（不再硬着头皮跑）。
+      **不要写 /benchmark**：官方镜像里它是 root 所有的源码根，而平台 Job 是 ReadOnlyRootFilesystem。
+      run.sh 自动做两处接线把它接给 ais_bench：`AIS_BENCH_DATASETS_CACHE=<work_path>` 与
+      `--config-dir <work_path>/ais_bench/benchmark/configs`。
+    example: "/tmp/prefix-ws"
+
+  - name: summarizer
+    type: string
+    required: false
+    default: default_perf
+    description: "ais_bench 的性能汇总器。default_perf（默认）= 常规汇总；stable_stage = 稳态汇总（去掉起量/收尾段，取系统真实最佳性能）。"
+    example: default_perf
+
+  - name: pods
+    type: array
+    required: false
+    description: |
+      抓 /metrics 算命中率的节点列表，形如 `["10.0.0.11:8000","10.0.0.12:8000"]`。
+      默认取被测服务的 host:port。PD 分离场景填各 P 节点及其 dp 域端口；
+      填了就以填的为准（不再用被测地址）。
+    example: ["10.0.0.11:8000"]
+
+  - name: test_type
+    type: string
+    required: false
+    default: stream
+    description: "流式（stream，默认，模型配置 VLLMCustomAPIChatStream）或非流式（text，VLLMCustomAPIChat）。TPOT 只有流式才有意义。"
+    example: stream
+
+  - name: enable_think
+    type: boolean
+    required: false
+    default: false
+    description: "给请求附带 `chat_template_kwargs={\"enable_thinking\": true}`（DeepSeek V3.1 思考模式）。默认 false。"
+    example: false
+
+  - name: test_accuracy
+    type: boolean
+    required: false
+    default: false
+    description: |
+      改跑精度（ais_bench 不带 --mode perf，加 --dump-eval-details，generation_kwargs 换成
+      temperature=0.6/top_p=0.95）。默认 false。**注意**：本 Runner 的指标映射只认性能汇总表，
+      精度分数不会进 result.json（要精度请用 aisbench-acc）；开它只是为了在同一 Job 里顺带取精度。
+      开启时不做被测服务可达性预检。
+    example: false
+
+  - name: repeat
+    type: integer
+    required: false
+    default: 1
+    description: "同一命令重复轮数（上游 `--repeat`，仍在同一个点里循环）。默认 1。注意上游的数据采集只取最后一次的结果表。"
+    example: 1
+
+  - name: npu_num
+    type: integer
+    required: false
+    default: 1
+    description: "卡数，用于算单卡吞吐（result.json 里 `output_throughput` 的 `labels.scope=per_device` 那一项 = 总吞吐 / npu_num）。默认 1。"
+    example: 8
+
+  - name: length_mean
+    type: integer
+    required: false
+    description: "变长负载：输入长度均值（与 length_std 同时给才生效）。"
+    example: 32768
+  - name: length_std
+    type: integer
+    required: false
+    description: "变长负载：输入长度标准差。与 length_mean 配对；只给一个会被工具拒绝。"
+    example: 4915
+  - name: length_min
+    type: integer
+    required: false
+    description: "变长负载：长度下限（与 length_max 配对）。"
+    example: 8192
+  - name: length_max
+    type: integer
+    required: false
+    description: "变长负载：长度上限（与 length_min 配对）。"
+    example: 131072
+
+  - name: num_warmups
+    type: string
+    required: false
+    default: "0"
+    description: |
+      透传给 ais_bench 的 `--num-warmups`。默认 `"0"`（上游硬编码的值，配合
+      `generation_kwargs.ignore_eos=True` 用）。留空 `""` = 完全不传该参数——
+      这正是上游 FAQ #3「旧版 ais_bench 报 unrecognized arguments: --num-warmups」的解法，
+      不用再去改源码。
+    example: "0"
+
+  - name: aisbench_cmd
+    type: string
+    required: false
+    default: ais_bench
+    description: "替换 ais_bench 命令（可带参数，按 shell 解析）。默认镜像里的真命令 `ais_bench`；离线自检填 `python3 /runner/tests/stub_aisbench.py`。"
+    example: "python3 /runner/tests/stub_aisbench.py"
+
+  - name: aisbench_extra_args
+    type: string
+    required: false
+    default: ""
+    description: "追加到 ais_bench 命令末尾的原始参数串（按 shell 解析）。默认空；用来透传本 Runner 未建模的 ais_bench 开关。run.sh 会把它和自动追加的 `--config-dir` 拼在一起。"
+    example: ""
+
+  - name: run_timeout
+    type: number
+    required: false
+    default: 0
+    description: "单次 ais_bench 调用的超时秒数，超时按进程组终止该点。默认 0 = 不限。阶梯/长上下文建议给值（如 1800），否则只能等平台 watchdog 把整个 Job 掐掉（RUNNER_TIMEOUT 且没有产物）。"
+    example: 1800
+
+  - name: keep_pick_state
+    type: boolean
+    required: false
+    default: false
+    description: |
+      保留 `picked_ids.txt`（GSM8K 挑题记录）。默认 false = 每次运行前清掉：
+      这既是上游 FAQ「删除 picked_ids.txt」的自动化，也是可复现性的前提（记录跨次累积时，
+      同一 seed 也会因为「历史挑过哪些行」不同而产出不同数据集）。
+      设 true 只在你**明确要跨运行不重复挑题**时用（例如连着跑很多轮、想让前缀始终不同），
+      此时数据集不再可复现。
+    example: false
+
+  - name: no_stream
+    type: boolean
+    required: false
+    default: false
+    description: "true 时不把工具/ais_bench 的输出实时打到 stdout（仍完整落盘 logs/prefix.log）。默认 false；长跑日志量大时建议 true——平台日志框只装 stdout（§5.2）。"
+    example: false
+
+# 运行期读取的环境变量（§12.4）：只声明，不绑定。凭据只走环境变量，不进参数文件、不进 argv。
+env:
+  ENDPOINT_API_KEY:
+    required: false
+    secret: true
+    description: "Bearer token，用于目标服务鉴权。只经环境变量注入：run.sh 不把它拼进 argv（容器里 `ps` 看不到），生成的 ais_bench 模型配置里写的是读该变量的表达式（明文不落盘），日志里只出现 `api_key=_API_KEY`。不提供则按无鉴权压测。"

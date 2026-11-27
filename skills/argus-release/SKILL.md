@@ -13,10 +13,15 @@ description: Argus 发版流程——chart 版本三件套、tag 触发多架构
    - `docs/runbook/release-X.Y.Z.md`：发布说明（镜像表 digest 留占位）；
    - 验证：`.tools/helm.exe lint deploy/charts/argus` + `helm template argus -f values-kind.yaml`（应渲染 `:kind-local`）。
 2. **合并后打 tag**：`git tag vX.Y.Z origin/main && git push origin vX.Y.Z` →
-   `.github/workflows/release.yml` 自动发 **7 镜像 × amd64/arm64**
-   （server、web + `runners/*/build/Dockerfile` 自动发现的 5 个 runner；加 runner 不用改 workflow）。
-3. **提取 digest**：run log 里 `steps.build.outputs.digest` 的 echo 行
-   （`gh run view <id> --log | grep digest`），用
+   `.github/workflows/release.yml` 自动发 **9 镜像 × amd64/arm64**
+   （server、web + `runners/*/build/Dockerfile` 自动发现的 7 个 runner；加 runner 不用改 workflow）。
+   构建策略（2026-11-27 起）：**双 job 原生 runner，不走 QEMU**——amd64 腿 `ubuntu-latest`、
+   arm64 腿 `ubuntu-24.04-arm`（public 仓库免费）各自 `push-by-digest`，`merge` job 用
+   `imagetools create` 合 manifest list 并打 tag。digest 提取改从 `merge` job 的
+   `steps.merge.outputs.index_digest`；`aisbench-sla` 因基镜像单架构，arm 腿上仍需 binfmt
+   （workflow 里已装）。`platforms` 输入单平台时 verify 只校验请求的平台。
+3. **提取 digest**：merge job 的 job summary 直接给出 index digest（或
+   `gh run view <id> --log | grep index_digest`），用
    `docker buildx imagetools inspect ghcr.io/ucm-system/argus-<name>:<tag>` 复核 index digest 一致。
 4. **digest 回填 PR**（沿 #89/#107 模式）：`values.yaml` 钉 argus-server 的 index digest +
    发布说明镜像表补全 7 个 digest。

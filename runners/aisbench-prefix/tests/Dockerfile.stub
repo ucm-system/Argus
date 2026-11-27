@@ -1,0 +1,44 @@
+# 离线冒烟镜像（**不进发布矩阵**：release.yml 只扫 build/Dockerfile*）
+#
+#   docker build -f runners/aisbench-prefix/tests/Dockerfile.stub \
+#     -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.4-stub runners/aisbench-prefix
+#   docker run --rm --entrypoint bash \
+#     ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.4-stub /runner/tests/smoke.sh
+#
+# 为什么单独一个：发布镜像要装 ais_bench + torch（GB 级），而冒烟只需要
+# 「run.sh + vendored 工具 + 桩 ais_bench + 假服务端 + 假 tokenizer」——
+# 假 transformers（tests/fakepkgs）让数据集生成链路在毫秒级跑完，
+# 于是 CI / 本机都能在不下载权重、不装 torch 的情况下验证：
+# 参数映射、seed 可复现、picked_ids 清理、退出码、凭据零泄漏、result.json 结构。
+FROM python:3.10-slim-bookworm
+
+ARG RUNNER_UID=10001
+ARG RUNNER_GID=10001
+
+ENV HOME=/tmp \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8 \
+    PYTHONPATH=/runner/tests/fakepkgs
+
+RUN groupadd -g ${RUNNER_GID} runner \
+ && useradd -u ${RUNNER_UID} -g ${RUNNER_GID} -M -d /tmp -s /bin/bash runner \
+ && mkdir -p /runner /workspace/output /tmp/prefix-ws /tmp/prefix-state \
+ && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner /workspace /tmp
+
+COPY run.sh summarize.py report.py /runner/
+COPY tool /runner/tool
+COPY tests /runner/tests
+COPY tests/fixtures /runner/fixtures
+
+RUN pip install --no-cache-dir pandas requests
+
+RUN sed -i 's/\r$//' /runner/run.sh /runner/summarize.py /runner/tests/*.sh /runner/tests/*.py \
+ && find /runner/tool /runner/tests -name '*.py' -exec sed -i 's/\r$//' {} + \
+ && chmod 0755 /runner/run.sh /runner/tests/smoke.sh \
+ && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner
+
+USER ${RUNNER_UID}:${RUNNER_GID}
+WORKDIR /workspace
+# 冒烟时 --entrypoint bash 覆盖它；默认仍是真实入口（与发布镜像同构）。
+ENTRYPOINT ["/runner/run.sh"]

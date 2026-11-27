@@ -5,6 +5,17 @@
 #   - 手工 workflow_dispatch（可填 tag 与平台，用于补发/回滚验证）
 #   - PR → 只构建 **amd64**、不推送（防止 Dockerfile 腐烂）
 #
+# 构建策略（2026-11-27 改）：**按架构原生跑，不用 QEMU**——
+#   - discover 生成「镜像 × 平台」叉积矩阵：amd64 腿跑 `ubuntu-latest`，arm64 腿跑
+#     `ubuntu-24.04-arm`（public 仓库免费的原生 arm runner）。两腿各自原生构建、
+#     `push-by-digest`，最后 `merge` job 用 `docker buildx imagetools create`
+#     合成 manifest list 并打 tag（docker 官方推荐的多平台做法）。
+#   - 动机：aisbench-prefix 这类镜像要在 Dockerfile 里 `pip install torch + 全套依赖`，
+#     QEMU 模拟下解依赖要几十分钟，原生 arm runner 是分钟级。
+#   - binfmt/QEMU 仍装一步，**只有** `aisbench-sla` 需要：它的基镜像
+#     `ghcr.io/aisbench/aisbench_benchmark:…x86_64_py_310` 本身是单架构，arm 腿上必须靠
+#     binfmt 跑 x86_64 的 RUN 步骤。其余镜像在原生 runner 上装 binfmt 无副作用（~10s）。
+#
 # 镜像落点（GHCR，公开仓库用 GITHUB_TOKEN 即可，无需额外 Secret）：
 #   ghcr.io/<owner>/argus-server:<tag>  +  :sha-<12>
 #   ghcr.io/<owner>/argus-web:<tag>     +  :sha-<12>
@@ -23,7 +34,7 @@ on:
         required: false
         type: string
       platforms:
-        description: '目标平台（逗号分隔；默认双架构）'
+        description: '目标平台（逗号分隔；默认双架构。单平台只用于临时验证，正式 tag 必须双架构）'
         required: false
         default: 'linux/amd64,linux/arm64'
         type: string
@@ -44,39 +55,61 @@ env:
 jobs:
   # 先枚举 runners/ 下所有 Runner，避免矩阵写死（加一个 Runner 不用改 workflow）
   discover:
-    name: 发现 Runner
+    name: 发现 Runner 并生成矩阵
     runs-on: ubuntu-latest
     outputs:
-      runners: ${{ steps.list.outputs.runners }}
-      # publish 的 matrix 直接吃这一份（server + web + runners/*），job 里不再硬编码
-      matrix: ${{ steps.list.outputs.matrix }}
+      # build 矩阵：镜像 × 平台（每条腿一个 job，原生 runner）
+      build_matrix: ${{ steps.list.outputs.build_matrix }}
+      # merge 矩阵：每个镜像一行（等两腿 digest 齐了合成 manifest list）
+      merge_matrix: ${{ steps.list.outputs.merge_matrix }}
     steps:
       - uses: actions/checkout@v4
       - id: list
-        name: 生成发布矩阵（server + web + 所有 Runner，加 Runner 不用改 workflow）
+        name: 生成发布矩阵（server + web + 所有 Runner × 双架构）
         run: |
+          entry() {  # entry <image> <dockerfile> <context> <platform> <arch> <runner>
+            printf '{"image":"%s","dockerfile":"%s","context":"%s","platform":"%s","arch":"%s","runner":"%s"},' \
+              "$1" "$2" "$3" "$4" "$5" "$6"
+          }
           {
-            printf '{"image":"server","dockerfile":"deploy/docker/server.Dockerfile","context":"."},'
-            printf '{"image":"web","dockerfile":"deploy/docker/web.Dockerfile","context":"."}'
+            entry server deploy/docker/server.Dockerfile . linux/amd64 amd64 ubuntu-latest
+            entry server deploy/docker/server.Dockerfile . linux/arm64 arm64 ubuntu-24.04-arm
+            entry web deploy/docker/web.Dockerfile . linux/amd64 amd64 ubuntu-latest
+            entry web deploy/docker/web.Dockerfile . linux/arm64 arm64 ubuntu-24.04-arm
             # Runner：上下文是 runners/<name>/（不是仓库根）
             # build/Dockerfile 是该 Runner 的唯一发布镜像。若将来确有变体，可加 build/Dockerfile.<variant>，
             # 镜像名会带后缀 runner-<name>-<variant>，不和默认镜像抢同一个 tag。
             for d in $(ls -1 runners); do
               if [ -f "runners/$d/build/Dockerfile" ]; then
-                printf ',{"image":"runner-%s","dockerfile":"runners/%s/build/Dockerfile","context":"runners/%s"}' "$d" "$d" "$d"
+                entry "runner-$d" "runners/$d/build/Dockerfile" "runners/$d" linux/amd64 amd64 ubuntu-latest
+                entry "runner-$d" "runners/$d/build/Dockerfile" "runners/$d" linux/arm64 arm64 ubuntu-24.04-arm
               fi
               for v in $(ls -1 "runners/$d/build"/Dockerfile.* 2>/dev/null | sed 's#.*/Dockerfile\.##'); do
-                printf ',{"image":"runner-%s-%s","dockerfile":"runners/%s/build/Dockerfile.%s","context":"runners/%s"}' "$d" "$v" "$d" "$v" "$d"
+                entry "runner-$d-$v" "runners/$d/build/Dockerfile.$v" "runners/$d" linux/amd64 amd64 ubuntu-latest
+                entry "runner-$d-$v" "runners/$d/build/Dockerfile.$v" "runners/$d" linux/arm64 arm64 ubuntu-24.04-arm
               done
             done
             echo ""
-          } > /tmp/items.txt
-          echo "matrix={\"include\":[$(cat /tmp/items.txt)]}" >> "$GITHUB_OUTPUT"
-          echo "发布矩阵："
-          cat /tmp/items.txt; echo
+          } > /tmp/build-items.txt
+          # merge 维：同一镜像只留一行（注意 build items 是单行文件，
+          # awk 按 FS 分字段只会切出第一个 "image":"，必须 grep -o 逐条拆行）
+          grep -o '"image":"[^"]*"' /tmp/build-items.txt \
+            | sed 's/"image":"//; s/"$//' \
+            | awk '!seen[$0]++ {printf "{\"image\":\"%s\"},", $0}' > /tmp/merge-items.txt
+          echo "" >> /tmp/merge-items.txt
+          # 两个矩阵 JSON：统一在拼接后剥掉最后一个尾逗号（entry() 恒带尾逗号，
+          # 直接拼接会产出非法 JSON——fromJSON 会静默炸掉整条流水线）
+          build_items="$(cat /tmp/build-items.txt)"
+          merge_items="$(cat /tmp/merge-items.txt)"
+          echo "build_matrix={\"include\":[${build_items%,}]}" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix={\"include\":[${merge_items%,}]}" >> "$GITHUB_OUTPUT"
+          echo "构建矩阵（镜像 × 平台）："
+          cat /tmp/build-items.txt; echo
+          echo "合并矩阵（镜像维）："
+          cat /tmp/merge-items.txt; echo
           echo "Runner 数量：$(ls -1 runners | wc -l)"
 
-  # PR 上只验证 Dockerfile 还能构建（amd64，不推送）
+  # PR 上只验证 Dockerfile 还能构建（amd64，原生，不推送）
   build-only:
     name: 构建验证（PR，amd64，不推送）
     if: github.event_name == 'pull_request'
@@ -103,44 +136,24 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
-  publish:
-    name: 发布镜像（多架构）
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+  # 每条腿：原生 runner 构建单个平台并按 digest 推送（不产生可变 tag，tag 由 merge 统一打）
+  build:
+    name: 构建（${{ matrix.image }} / ${{ matrix.arch }}，原生）
     needs: discover
+    if: >-
+      (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') &&
+      (inputs.platforms == '' || contains(inputs.platforms, matrix.platform))
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.discover.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0     # git describe 要 tag 历史
 
+      # binfmt/QEMU：只为 aisbench-sla（基镜像单架构 x86_64）在 arm 腿上跑 RUN 步骤；
+      # 其余镜像原生构建，装它无副作用（~10s）。
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-
-      - name: 计算 tag
-        id: meta
-        run: |
-          raw="${{ inputs.tag }}"
-          if [ -z "$raw" ]; then raw="${GITHUB_REF_NAME}"; fi
-          ver="${raw#v}"
-          short="$(git rev-parse --short=12 HEAD)"
-          ref="${{ env.REGISTRY }}/${{ env.OWNER }}/argus-${{ matrix.image }}"
-          echo "version=${ver}" >> "$GITHUB_OUTPUT"
-          echo "short=${short}" >> "$GITHUB_OUTPUT"
-          # :latest 只允许由 tag 触发更新；workflow_dispatch 从任意 ref 触发时绝不动 latest（W-8）
-          {
-            echo "${ref}:${ver}"
-            echo "${ref}:sha-${short}"
-            if [ "${{ github.ref_type }}" = "tag" ]; then echo "${ref}:latest"; fi
-          } > /tmp/tags.txt
-          {
-            echo "tags<<EOF"
-            cat /tmp/tags.txt
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "tags:"; cat /tmp/tags.txt
 
       # 组织策略把默认 workflow 权限锁成 read 时，GITHUB_TOKEN 拿不到 packages:write
       # （报 `denied: permission_denied: write_package`）。所以优先用带 write:packages 的
@@ -155,51 +168,136 @@ jobs:
       - name: preflight
         run: echo "GHCR push credential = repo secret GHCR_TOKEN if present, else GITHUB_TOKEN"
 
-      - name: 构建并推送（多架构）
+      # 按 digest 推送：tag 在 merge job 统一合成（imagetools create），这里不产生可变引用
+      - name: 构建并按 digest 推送
         id: build
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
+          platforms: ${{ matrix.platform }}
           push: true
-          provenance: false
+          provenance: false        # attestation manifest 会搅乱 imagetools 合并，发版镜像不需要
           sbom: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          outputs: type=image,push-by-digest=true,name=${{ env.REGISTRY }}/${{ env.OWNER }}/argus-${{ matrix.image }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
 
-      - name: 校验双架构清单
+      - name: 导出 digest
         run: |
-          ref="${{ env.REGISTRY }}/${{ env.OWNER }}/argus-${{ matrix.image }}:${{ steps.meta.outputs.version }}"
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+          echo "digest=$digest"
+
+      # artifact 名不能带 '/'，用 arch（amd64/arm64）；merge 按精确名下载，避免
+      # `digests-runner-x-*` 这类前缀误吞变体镜像（runner-x-<variant>）的 artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # 两腿 digest → imagetools create 合成 manifest list → 校验平台齐 → 打 tag
+  merge:
+    name: 合并清单并打 tag（${{ matrix.image }}）
+    needs: [discover, build]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.merge_matrix) }}
+    steps:
+      # 两条腿分别按**精确名**下载（通配 `digests-<image>-*` 会误吞同名前缀的变体镜像，
+      # 如 runner-x 与 runner-x-<variant>）；单平台 dispatch 时只下载跑了的那条腿。
+      - name: 下载 amd64 digest
+        if: inputs.platforms == '' || contains(inputs.platforms, 'linux/amd64')
+        uses: actions/download-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-amd64
+          path: ${{ runner.temp }}/digests
+      - name: 下载 arm64 digest
+        if: inputs.platforms == '' || contains(inputs.platforms, 'linux/arm64')
+        uses: actions/download-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-arm64
+          path: ${{ runner.temp }}/digests
+      # 组织策略把默认 workflow 权限锁成 read 时，GITHUB_TOKEN 拿不到 packages:write
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: 计算 tag
+        id: meta
+        run: |
+          raw="${{ inputs.tag }}"
+          if [ -z "$raw" ]; then raw="${GITHUB_REF_NAME}"; fi
+          ver="${raw#v}"
+          short="${GITHUB_SHA::12}"
+          ref="${{ env.REGISTRY }}/${{ env.OWNER }}/argus-${{ matrix.image }}"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          # :latest 只允许由 tag 触发更新；workflow_dispatch 从任意 ref 触发时绝不动 latest（W-8）
+          {
+            echo "${ref}:${ver}"
+            echo "${ref}:sha-${short}"
+            if [ "${{ github.ref_type }}" = "tag" ]; then echo "${ref}:latest"; fi
+          } > "$RUNNER_TEMP/tags.txt"
+          echo "tags:"; cat "$RUNNER_TEMP/tags.txt"
+
+      - name: 合成多架构清单（imagetools create）
+        id: merge
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          ref="${{ steps.meta.outputs.ref }}"
+          args=( $(printf -- '-t %s ' $(cat "$RUNNER_TEMP/tags.txt")) )
+          for d in *; do args+=( "$ref@sha256:$d" ); done
+          docker buildx imagetools create "${args[@]}"
+          index_digest="$(docker buildx imagetools inspect "$ref:${{ steps.meta.outputs.version }}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "index_digest=$index_digest" >> "$GITHUB_OUTPUT"
+
+      - name: 校验平台清单（不许静默降级）
+        run: |
+          ref="${{ steps.meta.outputs.ref }}:${{ steps.meta.outputs.version }}"
+          # 期望平台 = inputs.platforms（空 = 默认双架构；tag 推送时 input 恒空 → 恒校双架构）
+          expected="${{ inputs.platforms }}"
+          [ -z "$expected" ] && expected="linux/amd64,linux/arm64"
           # 用人类可读输出（含 `Platform: linux/amd64` 行）；--format {{json .Manifest}} 里没有 platform 字段
           out="$(docker buildx imagetools inspect "$ref")"
           echo "$out"
-          echo "$out" | grep -q "linux/amd64" || { echo "❌ 缺 linux/amd64（不许静默降级成单架构）"; exit 1; }
-          echo "$out" | grep -q "linux/arm64" || { echo "❌ 缺 linux/arm64（不许静默降级成单架构）"; exit 1; }
-          echo "✅ 双架构齐了"
-
+          rc=0
+          IFS=',' read -ra PLAT <<< "$expected"
+          for p in "${PLAT[@]}"; do
+            p="$(echo "$p" | xargs)"
+            echo "$out" | grep -q "$p" || { echo "❌ 缺 $p"; rc=1; }
+          done
+          [ $rc -eq 0 ] && echo "✅ 平台齐了：$expected"
+          exit $rc
 
       - name: 写 job summary
         run: |
+          latest=""
+          if [ "${{ github.ref_type }}" = "tag" ]; then latest=' / `latest`'; fi
           {
             echo "### ${{ matrix.image }}"
             echo ""
             echo "| 项 | 值 |"
             echo "|---|---|"
-            echo "| 镜像 | \`${{ env.REGISTRY }}/${{ env.OWNER }}/argus-${{ matrix.image }}\` |"
-            echo "| tag | \`${{ steps.meta.outputs.version }}\` / \`sha-${{ steps.meta.outputs.short }}\` / \`latest\` |"
+            echo "| 镜像 | \`${{ steps.meta.outputs.ref }}\` |"
+            echo "| tag | \`${{ steps.meta.outputs.version }}\` / \`sha-${{ steps.meta.outputs.short }}\`$latest |"
             echo "| 平台 | \`${{ inputs.platforms || 'linux/amd64,linux/arm64' }}\` |"
-            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| index digest | \`${{ steps.merge.outputs.index_digest }}\` |"
             echo ""
             echo '填进 Helm values：'
             echo '```yaml'
             echo "image:"
-            echo "  repository: ${{ env.REGISTRY }}/${{ env.OWNER }}/argus-${{ matrix.image }}"
-            echo "  digest: ${{ steps.build.outputs.digest }}"
+            echo "  repository: ${{ steps.meta.outputs.ref }}"
+            echo "  digest: ${{ steps.merge.outputs.index_digest }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
