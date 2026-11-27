@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import hashlib
 import json
@@ -96,13 +97,34 @@ def read_events(points_root):
 
 
 def hit_events(events):
-    """每个 point 的 hit 事件（同一 phase 取最后一条），→ [(concurrency, event, point)]。"""
+    """→ {(point, phase): event}：同一 (点, 阶段) 后写的覆盖先写的。
+
+    metrics 的 result.json 只用 phase=full 的命中率；CSV 观察表 prefix/full 都要。"""
     picked = {}
     for point, rows in events:
         for event in rows:
-            if event.get("kind") == "hit" and event.get("phase") == "full":
-                picked[point] = event        # 同一目录里后写的覆盖先写的
+            if event.get("kind") == "hit":
+                picked[(point, event.get("phase") or "full")] = event
     return picked
+
+
+def hit_percent(event, scope):
+    """→ (percent, queries) 或 (None, 0)：从 ALL_PODS 行差分出命中率（percent）。"""
+    rows = event.get("rows") or []
+    all_pods = next((r for r in rows if r.get("scope") == "ALL_PODS"), None)
+    if all_pods is None:
+        return None, 0
+    external_ok = bool(all_pods.get("external_available") or
+                       event.get("external_available"))
+    if scope == "external" and not external_ok:
+        return None, 0
+    hits = as_number(all_pods.get({"hbm": "hbm_hits",
+                                   "external": "external_hits"}[scope]))
+    queries = as_number(all_pods.get({"hbm": "hbm_queries",
+                                      "external": "external_queries"}[scope]))
+    if hits is None or queries is None or queries <= 0:
+        return None, 0
+    return hits / queries * 100.0, int(queries)
 
 
 def point_index(point):
@@ -177,41 +199,34 @@ def build_metrics(events):
                 # 也不把哨兵当测量值写进 metrics。
                 missing.append("%s/%s 未解析到：%s" % (point, phase, ", ".join(absent)))
     # 命中率：**每个并发点都要有自己的命中率**（只取最后一点会把阶梯里其余点的证据丢掉）
-    picks = hit_events(events)
+    picks = {key: ev for key, ev in hit_events(events).items() if key[1] == "full"}
     if not picks:
         missing.append("hit_rate（工具没算出命中率快照：--prefix_test 关闭，"
                        "或目标服务 /metrics 没有 vllm:prefix_cache_* 计数器）")
-    for point, event in sorted(picks.items()):
-        rows = event.get("rows") or []
+    for (point, _phase), event in sorted(picks.items()):
         reason = event.get("reason") or ""
-        all_pods = next((r for r in rows if r.get("scope") == "ALL_PODS"), None)
         labels_base = {"concurrency": event.get("concurrency", point),
                        "phase": "full", "point": point_index(point)}
-        if all_pods is None:
+        if next((r for r in event.get("rows") or [] if r.get("scope") == "ALL_PODS"), None) is None:
             missing.append("hit_rate@%s（无可用快照：%s）" % (point, reason or "没有 ALL_PODS 行"))
             continue
-        external_ok = bool(all_pods.get("external_available") or
-                           event.get("external_available"))
-        for scope, hits_key, queries_key in (
-                ("hbm", "hbm_hits", "hbm_queries"),
-                ("external", "external_hits", "external_queries")):
-            if scope == "external" and not external_ok:
-                # vLLM 默认不暴露 external_prefix_cache_*：没有计数器 ≠ 命中率 0%
-                missing.append("hit_rate[external]@%s（目标服务没有 external_prefix_cache_* "
-                               "计数器，未上报而不是记 0）" % point)
-                continue
-            hits = as_number(all_pods.get(hits_key))
-            queries = as_number(all_pods.get(queries_key))
-            if queries is None or queries <= 0:
-                missing.append("hit_rate[%s]@%s（queries=0，命中率无定义）" % (scope, point))
+        for scope in ("hbm", "external"):
+            percent, queries = hit_percent(event, scope)
+            if percent is None:
+                if scope == "external":
+                    # vLLM 默认不暴露 external_prefix_cache_*：没有计数器 ≠ 命中率 0%
+                    missing.append("hit_rate[external]@%s（目标服务没有 external_prefix_cache_* "
+                                   "计数器，未上报而不是记 0）" % point)
+                else:
+                    missing.append("hit_rate[hbm]@%s（queries=0，命中率无定义）" % point)
                 continue
             add_metric(metrics, seen, {
                 "name": "hit_rate",
-                "value": round(hits / queries * 100.0, 2),
+                "value": round(percent, 2),
                 "unit": "percent",
                 "statistic": "mean",
                 "labels": dict(labels_base, scope=scope),
-                "sample_size": int(queries),
+                "sample_size": queries,
             }, missing_duplicates)
     if missing_duplicates:
         missing.append("键重复被丢弃的指标（name+statistic+labels 必须唯一，附录 A）："
@@ -242,6 +257,7 @@ def tail_truncate(path, limit):
 def collect_artifacts(out):
     """列产物：每点的日志/CSV/配置/事件 + ais_bench 的 work-dir；datasets 只列名不列内容。"""
     patterns = [
+        "aisbench_result.csv",
         "prefix_out/points/point-*/events.jsonl",
         "prefix_out/points/point-*/aisbench.log",
         "prefix_out/points/point-*/aisbench_all.log",
@@ -286,6 +302,65 @@ def env(name, default=""):
     return default if value is None else value
 
 
+# 上游 aisbench_result.csv 的**原列序**（save_file.save_csv 的 model_name 前缀 +
+# save_file.DEFAULT_METRICS 的 dict 序）。聚合表保持同一列序，人可以直接拿它对照
+# 上游手跑的产物；开头加 point/phase 两列（上游一个 CSV 攒多行时无法区分行是谁）。
+UPSTREAM_CSV_COLUMNS = [
+    "model_name", "current_time", "input_len", "output_len", "total_req", "max_cc",
+    "cc", "rr", "repeat_rate", "TTFT avg", "TTFT P90", "TPOT avg", "TPOT SLO_P90",
+    "E2E_time", "output_throughput", "single_output_throughput", "E2E_throughput",
+    "single_E2E_throughput", "qps", "qpm", "input_token_throughput",
+    "prefill_token_throughput", "E2EL avg", "E2EL P90",
+]
+
+
+def write_result_csv(out, events, hits, config):
+    """把阶梯里所有 (点 × 阶段) 汇成**一份**上游格式的 CSV（输出根目录）。
+
+    为什么要有它：result.json 是给平台消费的（附录 A 长表、UI/报告吃它），
+    但人观察阶梯全貌最顺手的还是上游那份宽表 CSV。上游自己只往 CWD 追加
+    （每点一份、混在 points 目录里），这里聚合到输出根目录：
+    列序与上游 aisbench_result.csv 完全一致，行 = 一个并发点的一个阶段
+    （prefix=预热 / full=全量）。哨兵值（99999/9999 = 工具没解析到）写**空格**
+    而不是照抄——照抄会让人把哨兵当测量值。
+    """
+    rows = []
+    # 上游 save_csv 的规则：model_name = MODEL_PATH 的最后一段（model_name 字段不在
+    # get_data 的 dict 里，是 save_csv 自己拼的），这里照抄
+    model_name = str(config.get("model_path") or "").rstrip("/\\").split("/")[-1] \
+        or str(config.get("model_name") or "")
+    for point, ev_rows in events:
+        for ev in ev_rows:
+            if ev.get("kind") != "metrics":
+                continue
+            phase = ev.get("phase") or "full"
+            values = ev.get("values") or {}
+            row = {"point": point_index(point), "phase": phase}
+            for col in UPSTREAM_CSV_COLUMNS:
+                raw = values.get(col)
+                row[col] = "" if raw in SENTINELS else raw
+            row["model_name"] = model_name or row.get("model_name", "")
+            hit = hits.get((point, phase))
+            if hit is None:
+                row["hit_rate_hbm"] = row["hit_rate_external"] = ""
+            else:
+                hbm, _ = hit_percent(hit, "hbm")
+                ext, _ = hit_percent(hit, "external")
+                row["hit_rate_hbm"] = "" if hbm is None else round(hbm, 2)
+                row["hit_rate_external"] = "" if ext is None else round(ext, 2)
+            rows.append(row)
+    if not rows:
+        return None                      # 一条 metrics 都没有（参数错误就退了）不产空表
+    path = os.path.join(out, "aisbench_result.csv")
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["point", "phase"] + UPSTREAM_CSV_COLUMNS +
+            ["hit_rate_hbm", "hit_rate_external"])
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
 def env_int(name, default=0):
     try:
         return int(str(env(name, "")).strip())
@@ -327,6 +402,9 @@ def main(argv=None):
         status, code = "failed", "RESULT_INVALID"
         reason = reason or "工具退出码 0 但没汇出任何指标（sidecar 里没有 metrics 事件）"
 
+    # 观察面 1：上游格式的聚合 CSV（人看的宽表；result.json 是给平台的长表）
+    csv_path = write_result_csv(out, events, hit_events(events), config)
+
     artifacts, truncated, skipped = collect_artifacts(out)
 
     notes = [item for item in (reason, extra_note) if item]
@@ -344,6 +422,9 @@ def main(argv=None):
         notes.append("探测点：" + "，".join(
             "%s(%s,batch=%s,%d 项)" % (row["point"], row["phase"], row["concurrency"],
                                        row["metrics"]) for row in point_rows))
+    if csv_path:
+        notes.append("观察用汇总表：aisbench_result.csv（上游 CSV 列序，"
+                     "一行 = 一个并发点的一个阶段；result.json 是给平台的长表）")
     if skipped:
         notes.append(f"产物条目超过 {MAX_ARTIFACT_COUNT} 条，已省略 {skipped} 个文件"
                      f"（完整内容仍在产物目录里，只是不再逐个列进 artifacts）")
@@ -405,7 +486,7 @@ def main(argv=None):
         "attempt_no": env_int("AG_ATTEMPT", 1) or 1,
         "runner_seq": env_int("AG_RUNNER_SEQ", 1) or 1,
         "runner": {"name": "aisbench-prefix",
-                   "version": env("AG_RUNNER_VERSION", "0.1.2"),
+                   "version": env("AG_RUNNER_VERSION", "0.1.3"),
                    "image_ref": env("AG_RUNNER_IMAGE", "unknown")},
         "status": status,
         "started_at": env("AG_STARTED"),

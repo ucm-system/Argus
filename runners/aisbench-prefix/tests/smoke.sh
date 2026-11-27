@@ -178,6 +178,23 @@ if [ -f "${RESULT}" ]; then
     has_metric "${RESULT}" hit_rate scope=hbm phase=full && ok "hit_rate(hbm) 有值" || bad "缺 hit_rate"
     has_metric "${RESULT}" output_throughput scope=per_device && ok "单卡吞吐有值" || bad "缺 per_device 吞吐"
     [ "$(jqa "${RESULT}" runner.name)" = "aisbench-prefix" ] && ok "runner.name 正确" || bad "runner.name=$(jqa "${RESULT}" runner.name)"
+    # 观察面 1：上游格式的聚合 CSV（输出根目录，一行 = 一个点的一个阶段）
+    if [ -f "${CASE_OUT}/aisbench_result.csv" ]; then
+        ok "聚合 CSV 在输出根目录"
+        head1=$(head -n 1 "${CASE_OUT}/aisbench_result.csv")
+        case "${head1}" in point,phase,*) ok "列头以 point,phase 开头（+ 上游原列序）" ;; *) bad "列头不对：${head1}" ;; esac
+        rows=$(( $(wc -l < "${CASE_OUT}/aisbench_result.csv") - 1 ))
+        [ "${rows}" -ge 4 ] && ok "聚合 CSV ${rows} 行（2 点 × 2 阶段）" || bad "聚合 CSV 只有 ${rows} 行"
+        grep -q hit_rate_hbm "${CASE_OUT}/aisbench_result.csv" \
+            && ok "命中率列在 CSV 里" || bad "缺命中率列"
+        grep -q '"path": *"aisbench_result.csv"' "${RESULT}" \
+            && ok "聚合 CSV 列进了 artifacts" || bad "artifacts 没列聚合 CSV"
+    else
+        bad "缺聚合 CSV（aisbench_result.csv）"
+    fi
+    # 观察面 2：每点的上游原始 CSV 仍在
+    [ -f "${CASE_OUT}/prefix_out/points/point-4/aisbench_result.csv" ] \
+        && ok "每点的上游原始 CSV 保留" || bad "缺每点 aisbench_result.csv"
     # 平台硬规则：name+statistic+labels 必须唯一，否则 Task 直接 RESULT_INVALID（kind 实测）
     dup=$("${PYTHON}" - "${RESULT}" <<'PYDUP'
 import json, sys

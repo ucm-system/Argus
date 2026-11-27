@@ -4,7 +4,7 @@
 # 不是仓库根——这是发版路径：.github/workflows/release.yml 给每个 Runner 的 context 就是
 # `runners/<name>`、dockerfile 是 `runners/<name>/build/Dockerfile`。
 #   docker build -f runners/aisbench-prefix/build/Dockerfile \
-#     -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 runners/aisbench-prefix
+#     -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3 runners/aisbench-prefix
 #
 # ---------------------------------------------------------------------------
 # 为什么不 FROM 官方 AISBench 镜像（与 aisbench-sla 不同，这是本 Runner 的取舍）

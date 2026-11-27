@@ -264,7 +264,8 @@ python:3.10-slim-bookworm                    # 多架构官方基础镜像
 
 ```text
 /workspace/output/
-├── result.json                        # 本 Runner 产物（D-74 三选一）
+├── result.json                        # 本 Runner 产物（D-74 三选一；给平台/UI/报告的**长表**）
+├── aisbench_result.csv                # **观察面：上游列序的聚合宽表**（一行 = 一个点的一个阶段）
 ├── logs/prefix.log                    # Runner 时间线 + 各点工具/ais_bench 输出
 └── prefix_out/
     ├── datasets/{c<N>|shared}/*.jsonl # 生成的数据集（前缀文件 + 完整数据集）
@@ -272,10 +273,22 @@ python:3.10-slim-bookworm                    # 多架构官方基础镜像
         ├── events.jsonl               # sidecar（summarize.py 的唯一数据源）
         ├── aisbench.log               # 该点的工具 + ais_bench 日志（上游落盘）
         ├── aisbench_all.log           # 同上（上游累积副本）
-        ├── aisbench_result.csv        # 上游结果表（给人看的证据）
+        ├── aisbench_result.csv        # 上游结果表（单点原始 CSV，原样保留）
         ├── temp_api.py                # 该点的 ais_bench 模型配置（不含凭据）
         └── work/<时间戳>/{configs,logs,performances,results}/  # ais_bench --work-dir
 ```
+
+**两个观察面并存**（这轮反馈：上游 CSV 好观察，别丢）：
+
+- **`aisbench_result.csv`（输出根目录）**：把阶梯里所有 (并发点 × 阶段) 聚合成**一份**，
+  列序 = 上游 `aisbench_result.csv` 原样（`model_name,current_time,input_len,…,E2EL P90`，
+  model_name 仍取 MODEL_PATH 的最后一段，照上游 `save_csv` 的规则），只在前面加了
+  `point,phase` 两列、末尾加了 `hit_rate_hbm/hit_rate_external` 两列——Excel 直接开，
+  每行是哪个点哪个阶段一目了然（上游自己攒多行时分不清）。哨兵值（99999/9999 =
+  工具没解析到）写成**空格**，避免被当成真实测量值。
+- **每点的 `points/point-<c>/aisbench_result.csv`**：工具原样产物，未动。
+- **`result.json`**：平台的消费面（附录 A 长表：`name/statistic/unit/labels`），UI 图表、
+  报告、指标对比、`GET /runners/{seq}/result` 都吃它——这个改不了也不该改。
 
 `result.json.artifacts` 按附录 A 列出（`{name, path, size_bytes, sha256}`，
 `path` 相对 `/workspace/output`）。**单文件超 50 MB 保留末尾**并标 `truncated: true`；
@@ -288,14 +301,14 @@ python:3.10-slim-bookworm                    # 多架构官方基础镜像
 
 ```bash
 docker build -f runners/aisbench-prefix/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 \
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3 \
   runners/aisbench-prefix
 
 # 多架构（= release.yml 的做法：amd64 腿跑 ubuntu-latest、arm64 腿跑 ubuntu-24.04-arm
 # 原生构建 + imagetools create 合清单；本机单机验证用 --platform --load 走 binfmt）
 docker buildx build --platform linux/amd64,linux/arm64 --push \
   -f runners/aisbench-prefix/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 runners/aisbench-prefix
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3 runners/aisbench-prefix
 
 # 关键断言：镜像里真有 ais_bench，且跑在 uid 10001
 docker run --rm <img> bash -lc 'command -v ais_bench && ais_bench --help >/dev/null && id'
@@ -341,7 +354,7 @@ echo '{"concurrency":[16],"input_len":2048,"output_len":1024,"data_num":64,
 docker run --rm --add-host=host.docker.internal:host-gateway \
   -e AG_TASK_ID=local -v /tmp/prefix-out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
-  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 \
+  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3 \
   /runner/run.sh --url http://host.docker.internal:8000/v1 \
     --model_name Qwen3-32B --model_path /models/Qwen3-32B
 ```
@@ -356,9 +369,9 @@ py -3.11 runners/aisbench-prefix/tests/test_summarize.py
 
 # 2) 容器里的全链路冒烟（唯一入口；同一条命令也能在任意装了 pandas/requests 的 Linux 里跑）
 docker build -f runners/aisbench-prefix/tests/Dockerfile.stub \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2-stub runners/aisbench-prefix
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3-stub runners/aisbench-prefix
 docker run --rm --entrypoint bash \
-  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2-stub /runner/tests/smoke.sh
+  ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3-stub /runner/tests/smoke.sh
 ```
 
 | 用例 | 构造 | 断言 |
@@ -416,7 +429,7 @@ bash runners/aisbench-prefix/tests/smoke.sh
 py -3.11 runners/aisbench-prefix/tests/validate_result_schema.py
 # 5) 发布镜像按发版 context 构建（双架构见上一节）
 docker build -f runners/aisbench-prefix/build/Dockerfile \
-  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.2 runners/aisbench-prefix
+  -t ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.3 runners/aisbench-prefix
 ```
 
 ## 本机验证记录（2026-11-27）
@@ -425,8 +438,8 @@ docker build -f runners/aisbench-prefix/build/Dockerfile \
 |---|---|---|
 | vendor 溯源 | `git hash-object` vs `gh api …/git/trees/main` | 7 个未改动文件 blob **逐字节一致**（commit `d9c24f38`）；4 个已改 + 1 个新增见 `tool/VENDORED.md` 的改动表 |
 | runner.yaml | 临时注册表测试（Parse + placeholder） | `OK aisbench-prefix@0.1.2 role=test params=32`，placeholder 单行合法且键全部已声明 |
-| 离线单测 | `tests/test_prefix_env.py` / `test_dataset_determinism.py` / `test_summarize.py` | 12 / 6 / 11 全绿（同 seed 数据集逐字节相同、记录标满 → `SystemExit(3)`、哨兵值不写成指标、**指标键唯一**、逐点命中率、external 缺失不编 0） |
-| 全链路离线冒烟 | `bash tests/smoke.sh`（WSL Ubuntu 24.04 + venv，桩 ais_bench + 假服务端） | **PASS=43 FAIL=0**：A/A2/A3/B/C/D/E/F/G 全部断言通过；`grep` 明文 key **0 命中** |
+| 离线单测 | `tests/test_prefix_env.py` / `test_dataset_determinism.py` / `test_summarize.py` | 12 / 6 / 12 全绿（同 seed 数据集逐字节相同、记录标满 → `SystemExit(3)`、哨兵值不写成指标、**指标键唯一**、逐点命中率、external 缺失不编 0、**聚合 CSV 上游列序**） |
+| 全链路离线冒烟 | `bash tests/smoke.sh`（WSL Ubuntu 24.04 + venv，桩 ais_bench + 假服务端） | **PASS=49 FAIL=0**：A/A2/A3/B/C/D/E/F/G 全部断言通过；聚合 CSV 列序/行数/命中率列/artifacts 全查；`grep` 明文 key **0 命中** |
 | 契约 | `tests/validate_result_schema.py` | RESULT SCHEMA **PASS**（成功/全点失败/部分失败/超时/参数错误全部过 openapi `Result`，含 `ErrorCode` enum） |
 | 发布镜像 | `docker build -f build/Dockerfile …`（PyPI 清华镜像源） | 0.1.1，**627 MB**（python:3.10-slim + CPU torch 2.14.1 + ais_bench 3.1.0）；构建期自检过（`ais_bench --help`、uid 10001、可写目录） |
 | **kind 真跑（真 ais_bench 3.1.20260630 + mock 服务 + 真 tokenizer）** | 平台 API 提交 Task，`service:` 外接模式 + `precheck: auto`，镜像先 `load-image.ps1` 灌进节点 | 两条链路都验证过，见下 |

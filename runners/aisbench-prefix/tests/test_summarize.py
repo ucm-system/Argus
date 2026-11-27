@@ -27,6 +27,7 @@ RUNNER_DIR = os.path.dirname(HERE)
 SUMMARIZE = os.path.join(RUNNER_DIR, "summarize.py")
 
 FULL_METRICS = {
+    "current_time": "2026-11-27 12:00:00",
     "input_len": 2048, "output_len": 1024, "total_req": 64, "max_cc": 8, "cc": 7.6,
     "rr": 0, "repeat_rate": 0.9,
     "TTFT avg": 120.5, "TTFT P90": 310.25, "TPOT avg": 8.4, "TPOT SLO_P90": 15.75,
@@ -261,6 +262,45 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(dupes, [], f"有重复的指标键：{dupes[:2]}")
         self.assertGreater(len(data["metrics"]), 30)
         self.assertEqual(data["status"], "succeeded")
+
+    def test_upstream_csv_is_aggregated(self):
+        """观察面：输出根目录的 aisbench_result.csv 要保持**上游列序**，
+        一行 = 一个并发点的一个阶段；哨兵值留空而不是照抄 99999。"""
+        import copy
+        import csv as csv_mod
+        for point, conc in (("2", "2"), ("4", "4")):
+            write_events(self.root, point, [
+                dict(CONFIG_EVENT, model_path="/models/mini"),
+                {"kind": "metrics", "phase": "prefix", "concurrency": "1",
+                 "values": dict(FULL_METRICS, max_cc=1, cc=1.0,
+                                **{"TTFT P90": 99999, "prefill_token_throughput": 9999})},
+                copy.deepcopy(HIT_EVENT_HBM_ONLY) | {"concurrency": conc},
+                {"kind": "metrics", "phase": "full", "concurrency": conc,
+                 "values": dict(FULL_METRICS, max_cc=int(conc))},
+            ])
+        data = run_summarize(self.root)
+        path = os.path.join(self.root, "aisbench_result.csv")
+        self.assertTrue(os.path.isfile(path), "聚合 CSV 没写到输出根目录")
+        with open(path, newline="", encoding="utf-8") as handle:
+            rows = list(csv_mod.DictReader(handle))
+        self.assertEqual(len(rows), 4, "2 点 × 2 阶段 = 4 行")
+        # 列序 = 上游列序（前面只多 point/phase，后面只多两列命中率）
+        self.assertEqual(rows[0]["model_name"], "mini")       # 上游规则：MODEL_PATH 的最后一段
+        self.assertIn("TTFT avg", list(rows[0].keys()))
+        self.assertEqual(float(rows[0]["TTFT avg"]), 120.5)
+        # 阶段与点
+        self.assertEqual([r["phase"] for r in rows], ["prefix", "full", "prefix", "full"])
+        self.assertEqual([r["point"] for r in rows], ["2", "2", "4", "4"])
+        # 哨兵值 → 留空（TTFT P90=99999 / prefill=9999 只出现在 prefix 行）
+        self.assertEqual(rows[0]["TTFT P90"], "")
+        self.assertEqual(rows[0]["prefill_token_throughput"], "")
+        self.assertNotEqual(rows[1]["TTFT P90"], "")
+        # 命中率列：prefix/full 都取各自阶段的快照
+        self.assertEqual(float(rows[1]["hit_rate_hbm"]), 50.0)
+        self.assertEqual(rows[1]["hit_rate_external"], "")   # 没有计数器 → 留空
+        # artifacts 里列了这份 CSV
+        self.assertIn("aisbench_result.csv", {a["path"] for a in data["artifacts"]})
+        self.assertIn("aisbench_result.csv", data["notes"])
 
     def test_workload_base_url_is_clean(self):
         write_events(self.root, "8", [
