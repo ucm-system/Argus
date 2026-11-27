@@ -43,7 +43,7 @@
 # =============================================================================
 set -uo pipefail   # 不用 -e：任何一步失败也要把 result.json 写出来（§5.9）
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 # 自身位置：镜像里是 /runner，仓库里直接跑就是 runners/aisbench-prefix——两种情况同构。
 SELF="${BASH_SOURCE[0]}"
 command -v readlink >/dev/null 2>&1 && SELF="$(readlink -f "${SELF}" 2>/dev/null || printf '%s' "${SELF}")"

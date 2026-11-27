@@ -405,7 +405,7 @@ def main(argv=None):
         "attempt_no": env_int("AG_ATTEMPT", 1) or 1,
         "runner_seq": env_int("AG_RUNNER_SEQ", 1) or 1,
         "runner": {"name": "aisbench-prefix",
-                   "version": env("AG_RUNNER_VERSION", "0.1.1"),
+                   "version": env("AG_RUNNER_VERSION", "0.1.2"),
                    "image_ref": env("AG_RUNNER_IMAGE", "unknown")},
         "status": status,
         "started_at": env("AG_STARTED"),
@@ -419,7 +419,7 @@ def main(argv=None):
         "notes": notes_text,
         "metadata": {
             "tool": "aisbench-prefix",
-            "tool_version": env("AG_TOOL_VERSION", "0.1.1"),
+            "tool_version": env("AG_TOOL_VERSION", "0.1.2"),
             "tool_source": "vendored aisbench_auto_tools_prefix@"
                            "d9c24f3822dfdcf01545388561d6138e059851e4 + 本地改动"
                            "（见 tool/VENDORED.md）",
