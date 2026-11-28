@@ -60,12 +60,11 @@ if [ "${ready}" -ne 1 ]; then
 fi
 
 # v2：业务参数只走输入文件（JSONL，§5.3）；CLI 只留公共参数（§5.10）。
+# 注意 JSONL **每行必须是完整 JSON 对象**（run.sh 的解析器逐行 json.loads），
+# 不能把一个对象拆成多行——v2 改造后这里坏过（容器冒烟没人跑就没发现）。
 PARAMS_FILE="${TMPDIR:-/tmp}/sla-smoke-params.jsonl"
 cat > "${PARAMS_FILE}" <<EOF
-{"input_len":128,"output_len":8,"data_num":8,"sla":["ttft.avg:100000"],
- "max":${MAX_CONCURRENCY},"max_probes":${MAX_PROBES},
- "dataset":"${DATASET}","aisbench_cmd":"${TOOL}/tests/stub_aisbench.py",
- "work_path":"/tmp/aisbench-ws"}
+{"input_len":128,"output_len":8,"data_num":8,"sla":["ttft.avg:100000"],"max":${MAX_CONCURRENCY},"max_probes":${MAX_PROBES},"dataset":"${DATASET}","aisbench_cmd":"${TOOL}/tests/stub_aisbench.py","work_path":"/tmp/aisbench-ws"}
 EOF
 
 BASE_ARGS=(
@@ -79,10 +78,15 @@ BASE_ARGS=(
 # request_rate=0 时 stub 的「实测并发」等于目标并发；给一个很小的值就能复现
 # 「频率成了瓶颈 → 并发压不满」的现场（评审 #62 的证据形态）。
 # 退出码就是 /runner/run.sh 的退出码。
+# v2：业务参数（start/request_rate）走**每个用例自己的 params.jsonl**（D-66：argv 恒空）。
 run_case() {
   local out="$1" desc="$2" start="$3" rate="$4"
   shift 4
   mkdir -p "${out}" || return 2
+  local case_params="${out}/params.jsonl"
+  cat > "${case_params}" <<EOF
+{"sla":["ttft.avg:100000"],"input_len":128,"output_len":8,"data_num":8,"start":${start},"request_rate":${rate},"max":${MAX_CONCURRENCY},"max_probes":${MAX_PROBES},"dataset":"${DATASET}","aisbench_cmd":"${TOOL}/tests/stub_aisbench.py","work_path":"/tmp/aisbench-ws"}
+EOF
   echo "==> [${desc}] run.sh → ${out}（start=${start} rate=${rate}；额外 env：${*:-无}）"
   (
     export AG_OUTPUT_DIR="${out}" \
@@ -92,9 +96,9 @@ run_case() {
            AG_RUNNER_IMAGE="${AG_RUNNER_IMAGE:-local-smoke}" \
            ENDPOINT_API_KEY="${CANARY}"
     if [ "$#" -gt 0 ]; then
-      env "$@" /runner/run.sh "${BASE_ARGS[@]}" --start="${start}" --request_rate="${rate}"
+      env "$@" /runner/run.sh "${BASE_ARGS[@]}" --params-file="${case_params}"
     else
-      /runner/run.sh "${BASE_ARGS[@]}" --start="${start}" --request_rate="${rate}"
+      /runner/run.sh "${BASE_ARGS[@]}" --params-file="${case_params}"
     fi
   )
 }
@@ -208,6 +212,24 @@ paths = [a.get("path") for a in result.get("artifacts") or []]
 for required in ("sla_out/sla_summary.json", "sla_out/sla_points.csv"):
     if required not in paths:
         problems.append("artifacts 未列出 %s（实际 %r）" % (required, paths))
+
+# ---------------------------------------------------------------- 观察面：result.html
+html_path = os.path.join(out, "result.html")
+if not os.path.isfile(html_path):
+    problems.append("缺少 result.html（阶梯对比报告，run.sh 应生成并列进 artifacts）")
+else:
+    doc = open(html_path, encoding="utf-8").read()
+    for marker in ("阶梯总表", "SLA 约束口径", "搜索结论", "趋势图"):
+        if marker not in doc:
+            problems.append("result.html 缺少章节：%s" % marker)
+    n_svg = len(__import__("re").findall(r"<svg ", doc))
+    if n_svg < 3:
+        problems.append("result.html 趋势图只有 %d 张（期望 ≥3：TTFT/TPOT/E2EL/吞吐/命中率）" % n_svg)
+    if 'src="http' in doc or 'href="http' in doc:
+        problems.append("result.html 引用了外部资源（应自包含）")
+    if "result.html" not in paths:
+        problems.append("artifacts 未列出 result.html")
+    print("==> result.html: %d 字节，%d 张趋势图" % (len(doc), n_svg))
 
 summary_path = os.path.join(out, "sla_out", "sla_summary.json")
 if os.path.isfile(summary_path):

@@ -137,7 +137,11 @@ aisbench-sla/
 ## 退出码与 result.json 映射
 
 > 产物契约（D-74）：test / pre_check Runner 产出 `result.json` / `result.html` / `result.csv` **至少其一**。
-> 本 Runner 选择产出 `result.json`（结构见附录 A schema 2.0），下表按此口径描述。
+> 本 Runner 产出 **两个**：`result.json`（平台长表，结构见附录 A schema 2.0，下表按此口径描述）
+> 与 `result.html`（阶梯对比报告：SLA 阈值线、逐点判定徽标、降级标注、命中率趋势；自包含、浏览器直开）。
+> 另有两个前置校验（kind 实测，0.6.0 起）：`AG_MODEL_PATH` 缺失/目录不存在 → 秒级
+> `VALIDATION_ERROR`（ais_bench 汇总器要 load_tokenizer，别等压测跑完才报）；
+> 被测服务 TCP 预检 12 次×10s（约 3 分钟）→ `ENDPOINT_UNREACHABLE`（retryable）。
 
 
 | 场景 | Runner exit | `result.json.status` | `error.code` |
@@ -222,7 +226,8 @@ aisbench_cmd）。`metadata` 记录工具名、工具版本（`aisbench-sla 0.7.
 
 ```text
 /workspace/output/
-├── result.json            # 本 Runner 产物（产物契约三选一 D-74：json/html/csv 至少其一，本 Runner 选 json；格式见附录 A）
+'├── result.json            # 本 Runner 产物（产物契约三选一 D-74：json/html/csv 至少其一，本 Runner 选 json；格式见附录 A）
+├── result.html            # **观察面：SLA 搜索报告**（自包含 HTML，浏览器直开；阶梯表 + 阈值线 + 命中率趋势）'
 ├── logs/sla.log           # 工具 stdout+stderr 的 tee（Runner 自己的时间线也在这里）
 ├── raw/                   # 自由区（当前为空，保留给 CONFIG_SNAPSHOT 之类）
 └── sla_out/               # 工具原生产物
@@ -251,9 +256,9 @@ dockerfile 是 `runners/<name>/build/Dockerfile`（与 `endpoint-probe` 同一�
 ```bash
 # 发版路径（= release.yml 矩阵的 context）
 docker build -f runners/aisbench-sla/build/Dockerfile \
-  -t registry.dev.huawei.com/argus/aisbench-sla:0.5.0 \
+  -t registry.dev.huawei.com/argus/aisbench-sla:0.6.0 \
   runners/aisbench-sla
-docker push registry.dev.huawei.com/argus/aisbench-sla:0.5.0
+docker push registry.dev.huawei.com/argus/aisbench-sla:0.6.0
 # 把镜像引用回填 runner.yaml 的 image 字段（tag 或 digest 均可）
 ```
 
@@ -336,7 +341,7 @@ echo '{"sla":["ttft.avg:100000"],"input_len":64,"output_len":4,"data_num":4,
 docker run --rm --add-host host.docker.internal:host-gateway \
   -v "$PWD/.data/aisbench-real/out:/workspace/output" \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
-  registry.dev.huawei.com/argus/aisbench-sla:0.5.0 \
+  registry.dev.huawei.com/argus/aisbench-sla:0.6.0 \
   /runner/run.sh --url http://host.docker.internal:18090/v1 --model_name mock-llm --model_path /models/Qwen3-0.6B
 ```
 
@@ -530,7 +535,7 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
   -e AG_TASK_ID=local \
   -v /tmp/sla-out:/workspace/output \
   -v /tmp/params.jsonl:/workspace/input/params.jsonl:ro \
-  registry.dev.huawei.com/argus/aisbench-sla:0.5.0 \
+  registry.dev.huawei.com/argus/aisbench-sla:0.6.0 \
   /runner/run.sh --url http://host.docker.internal:8000/v1 --model_name Qwen3-32B \
   --model_path /models/Qwen3-0.6B
 ```
@@ -583,11 +588,13 @@ py -3.11 runners/aisbench-sla/tool/tests/test_cli_surface.py
 py -3.11 runners/aisbench-sla/tool/tests/test_offline.py
 # 3) summary → result.json 映射（降级 / 正常 / 全降级 三种 fixture，不需要 docker）
 py -3.11 runners/aisbench-sla/tests/test_result_mapping.py
+# 3.5) result.html 阶梯报告（sla_summary.json 夹具 → 自包含 HTML；不需要 docker）
+py -3.11 runners/aisbench-sla/tests/test_report.py
 # 4) result.json 按平台契约校验（需要 pyyaml + jsonschema；缺依赖会跳过）
 py -3.11 runners/aisbench-sla/tests/validate_result_schema.py
 # 5) 镜像离线冒烟（构建上下文 = Runner 目录，与发版矩阵一致）
 docker build -f runners/aisbench-sla/build/Dockerfile \
-  -t registry.dev.huawei.com/argus/aisbench-sla:0.5.0 runners/aisbench-sla
+  -t registry.dev.huawei.com/argus/aisbench-sla:0.6.0 runners/aisbench-sla
 bash runners/aisbench-sla/tests/smoke.sh
 ```
 
