@@ -27,19 +27,22 @@ RUN pip install --no-cache-dir requests
 # 非 root 运行（§12.2），uid/gid 与真镜像一致（10001）。
 ARG RUNNER_UID=10001
 ARG RUNNER_GID=10001
+# /models/Qwen3-0.6B：smoke 的 model_path 默认值——0.6.0 起 run.sh 前置校验
+# AG_MODEL_PATH 目录存在（kind 实测：ais_bench 汇总器要 load_tokenizer），
+# stub 不跑真 ais_bench，但守卫一致，所以建一个空目录顶上。
 RUN groupadd -g ${RUNNER_GID} runner \
  && useradd -u ${RUNNER_UID} -g ${RUNNER_GID} -M -s /usr/sbin/nologin runner \
- && mkdir -p /workspace/output /runner /models \
+ && mkdir -p /workspace/output /runner /models /models/Qwen3-0.6B \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /workspace /runner /models
 
 # ---- 执行入口 + vendored 工具 + 测试（含 stub）--------------------------------
-COPY run.sh /runner/run.sh
+COPY run.sh report.py /runner/
 COPY tool /runner/tool
 COPY tests /runner/tests
 COPY tests/fixtures /runner/fixtures
 
 # CRLF 归一：Windows 检出可能带 CRLF，会让 shebang 报 `python3\r`。
-RUN sed -i 's/\r$//' /runner/run.sh \
+RUN sed -i 's/\r$//' /runner/run.sh /runner/report.py \
  && find /runner/tool /runner/tests -name '*.py' -type f -exec sed -i 's/\r$//' {} + \
  && chmod 0755 /runner/run.sh /runner/tool/sla_search.py /runner/tool/tests/*.py \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner
