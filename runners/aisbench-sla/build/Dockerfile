@@ -1,4 +1,4 @@
-# Argus Runner: aisbench-sla —— **唯一发布镜像**（真实 AISBench benchmark 基础镜像）
+# Argus Runner: aisbench-sla —— **唯一发布镜像**（多架构，pip 装 ais_bench）
 #
 # 唯一入口 /runner/run.sh（ARCHITECTURE §5.2 Single Entry Point）。
 #
@@ -11,21 +11,35 @@
 #
 # 构建由 CI 执行（§6.2）；runner.yaml 的 image 写产物引用即可（tag / digest 均可）。
 # vendored 来源与 commit 见 runners/aisbench-sla/tool/VENDORED.md。
-# 这里刻意**不**联网 clone 上游仓库：构建输入必须只是本仓库的字节（§6.2 可追溯）。
+# 这里刻意**不**联网 clone 上游仓库：构建输入必须只是本仓库的字节（§6.2 可追溯）；
+# 只有 pip 下载依赖这一步联网（版本已钉死，见下）。
 #
 # ---------------------------------------------------------------------------
-# 只有一种发布镜像（用户 2026-11-09 拍板）
+# 镜像路线（2026-11-28 改）：与 aisbench-prefix 统一——自打多架构，不再 FROM 官方镜像
 # ---------------------------------------------------------------------------
-# 以前有两个 Dockerfile：这个 + `Dockerfile.aisbench`。结果是**发布出去的是 stub 假镜像**
-# （python:3.11-slim + 自带 stub_aisbench.py），真镜像反而因为依赖本地 tokenizer 构建不出来。
-# 现在合成一份：本文件就是真镜像，基础镜像是官方 AISBench benchmark 镜像。
+# 0.2.0 起本镜像 FROM 官方 ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-…
+# （单架构 x86_64 tag，6.4GB），并在 README 里写明「钉 0330 避免与 0630 行为漂移」。
+# 2026-11-28 改为 prefix 同款自打路线（python slim + pip ais-bench-benchmark），理由：
+#   1. aisbench-prefix 已在 kind 上用 pip 安装的 ais_bench 20260630 真跑通整条链路
+#      （Task t-20261127-TMXF，三点阶梯 succeeded），「pip 路线没验证过」的前提不再成立；
+#   2. 0330 vs 0630 的已知行为差异只有 base_api 给非空 path 补尾斜杠（双 /v1），
+#      而 sla 的 run.sh 一直按「服务根」归一化 url（去 /v1）——两种版本行为一致，无漂移风险；
+#   3. 官方镜像只有 x86_64 tag，arm64 发版腿要靠 binfmt 模拟跑 x86 的 RUN 步骤（慢）；
+#      python slim + PyPI wheel（py3-none-any）+ aarch64 依赖 wheel 全部原生可得；
+#   4. 6.4GB → ~1.5GB，官方镜像里的 NPU/CANN/mindie 栈本 Runner 用不上。
+# 版本漂移的接受理由：PyPI 最早只发到 20260611，钉不住 0330；20260630 是 kind 真跑
+# 验证过的版本，TTFT/TPOT/E2EL 汇总表格式（parse.py 依赖）在该版本上解析正常。
+#
+# ---------------------------------------------------------------------------
+# 只有一种发布镜像（用户 2026-11-09 拍板，stub 只留在 tests/）
+# ---------------------------------------------------------------------------
 # stub 只留在 `tests/Dockerfile.stub`（离线冒烟用）；发布矩阵只扫 `build/Dockerfile*`，
 # 所以 tests/ 下的 stub 镜像**不会**进发布。
 #
 # ---------------------------------------------------------------------------
 # 关键设计：为什么 ais_bench 的工作目录是 /tmp/aisbench-ws 而不是 /benchmark
 # ---------------------------------------------------------------------------
-# 官方镜像里 /benchmark 是 ais_bench 的源码根（pip 装的就是它，root:root 0755）。
+# ais_bench 的源码根（pip 装的就是它，root:root 0755）。
 # 本 Runner 的 vendored 工具会往 **work_path 下**写两样东西：
 #   <work_path>/ais_bench/benchmark/configs/models/vllm_api/vllm_api_chat_temp.py  （模型配置）
 #   <work_path>/ais_bench/datasets/gsm8k/{train,test}.jsonl                        （数据集挂载）
@@ -50,13 +64,20 @@
 # 或用 `--model_path` 指一个**已经存在**的容器内路径（Profile 挂载 / 外部提供）。
 # 镜像里没有 `/models/*` 内容 —— 平台不替 Runner 分发模型；缺了由 run.sh/Runner 明确报错。
 #
-# FROM 钉的是 README 里写的那一版（0330 master，py310），避免与 0630 那版行为漂移。
-FROM ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-master_x86_64_py_310
+# 0.6.0 起另有前置校验：AG_MODEL_PATH 缺失/目录不存在 → 秒级 VALIDATION_ERROR
+# （ais_bench 的 default_perf 汇总器要 load_tokenizer，等压测跑完才报太晚）。
+FROM python:3.10-slim-bookworm
 
+ARG AIS_BENCH_VERSION=3.1.20260630
+# torch 钉死到 CPU 轮子（两个架构都有：torch-2.14.1+cpu-cp310-cp310-manylinux_2_28_{x86_64,aarch64}.whl）。
+# 用 `==<ver>+cpu` 而不是裸 `torch`：裸名在 PyPI 上是 CUDA 版（x86 会拖 nvidia-* 数 GB）。
+ARG TORCH_VERSION=2.14.1
 ARG RUNNER_UID=10001
 ARG RUNNER_GID=10001
+# 镜像源可按环境覆盖（内网构建时指到镜像站；默认 PyPI）。
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
-# 非 root 运行时没有 /home，HF datasets 缓存会去 ~/.cache 炸掉：全部收进 /tmp（可写）。
 ENV HOME=/tmp \
     XDG_CACHE_HOME=/tmp/.cache \
     HF_HOME=/tmp/hf \
@@ -71,9 +92,9 @@ ENV HOME=/tmp \
 RUN groupadd -g ${RUNNER_GID} runner \
  && useradd -u ${RUNNER_UID} -g ${RUNNER_GID} -M -d /tmp -s /bin/bash runner \
  && mkdir -p /runner /models /workspace/output /tmp/aisbench-ws \
- && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner /models /workspace /tmp
+ && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner /models /workspace /tmp/aisbench-ws
 
-# ---- 执行入口 ----------------------------------------------------------------
+# ---- 执行入口 + 阶梯报告（本仓库自有代码）--------------------------------------
 COPY run.sh report.py /runner/
 
 # ---- vendored 工具（只读副本；本地改动见 tool/VENDORED.md）--------------------
@@ -91,9 +112,45 @@ RUN sed -i 's/\r$//' /runner/run.sh /runner/report.py \
 RUN chmod 0755 /runner/run.sh /runner/tool/sla_search.py \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner
 
-USER ${RUNNER_UID}:${RUNNER_GID}
+# ---- ais_bench：先 CPU 版 torch，再装 ais-bench-benchmark ----------------------
+# torch 单独先装的原因：PyPI 上的 x86_64 torch wheel 会拖 CUDA 全家桶（数 GB），
+# 而 sla 与 prefix 一样只走 API 压测路径。装完 torch 后 ais_bench 的依赖检查直接满足。
+#
+# **两条索引都要给**：只写 `--index-url ${TORCH_INDEX_URL}` 时，torch 的依赖
+# （typing-extensions / filelock / fsspec …）也只能从 pytorch 索引找，那里某些版本
+# 只有 sdist → pip 转去 build，而 build backend（flit_core）同样只在 PyPI 上，
+# 于是 `No matching distribution found for flit_core<4,>=3.11` 直接构建失败（本机踩过）。
+# `+cpu` 这个本地版本号 PyPI 上没有，所以主索引给 pytorch、补充索引给 PyPI 是安全的。
+#
+# transformers 随 ais-bench wheel 依赖带入（数据集生成时 sla_tool/dataset.py 惰性加载
+# AutoTokenizer）；指定 --dataset 时不需要 tokenizer，也不需要 transformers 真正加载。
+RUN python -m pip install \
+      --index-url "${TORCH_INDEX_URL}" --extra-index-url "${PIP_INDEX_URL}" \
+      "torch==${TORCH_VERSION}+cpu" \
+ && python -m pip install --index-url "${PIP_INDEX_URL}" \
+      --extra-index-url "${TORCH_INDEX_URL}" \
+      "ais-bench-benchmark==${AIS_BENCH_VERSION}" \
+      "tqdm"
 
-# /benchmark 是镜像自带的源码根（只读也无所谓：本镜像不往里写）。
+# 构建期自检（能红才有意义）：命令在、版本对得上、非 root 可写关键目录、
+# 工具入口在。上游 docker/build_image.sh 也是这么验的（它跑 `ais_bench --models … --search`）。
+# 注意不检查 GSM8K.jsonl——sla 的语料走 --gsm8k-source CLI 参数（外部提供），
+# vendored 工具不带题库（那是 aisbench-prefix 的做法）。
+USER ${RUNNER_UID}:${RUNNER_GID}
+RUN set -eu; \
+    echo "[check] uid=$(id -u)"; \
+    command -v ais_bench; \
+    ais_bench --help >/dev/null; \
+    python -c "import ais_bench.benchmark as m, sys; \
+v = getattr(m, '__version__', ''); \
+print('ais_bench', v, 'python', sys.version.split()[0]); \
+sys.exit(0 if v.startswith('3.1') else 1)"; \
+    test -w /tmp/aisbench-ws && echo "[check] /tmp/aisbench-ws writable"; \
+    test -w /workspace/output && echo "[check] /workspace/output writable"; \
+    test -x /runner/tool/sla_search.py && echo "[check] tool entry present"; \
+    test -x /runner/run.sh && echo "[check] run.sh executable"; \
+    echo "[check] all passed"
+
 WORKDIR /workspace
 
 # 平台 Job Spec 的 command 也是 /runner/run.sh，二者等价。
