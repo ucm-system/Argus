@@ -74,7 +74,7 @@ RUN groupadd -g ${RUNNER_GID} runner \
  && chown -R ${RUNNER_UID}:${RUNNER_GID} /runner /models /workspace /tmp
 
 # ---- 执行入口 ----------------------------------------------------------------
-COPY run.sh /runner/run.sh
+COPY run.sh report.py /runner/
 
 # ---- vendored 工具（只读副本；本地改动见 tool/VENDORED.md）--------------------
 COPY tool /runner/tool
@@ -85,7 +85,7 @@ COPY tests/fixtures /runner/fixtures
 # CRLF 归一到 LF：本仓库在 Windows 上检出时 `tool/**/*.py` 可能带 CRLF，
 # 带 CRLF 的 shebang 在 Linux 里会报 `/usr/bin/env: 'python3\r'`。
 # 在镜像里擦一遍，比要求每个开发者配 .gitattributes 稳。
-RUN sed -i 's/\r$//' /runner/run.sh \
+RUN sed -i 's/\r$//' /runner/run.sh /runner/report.py \
  && find /runner/tool -name '*.py' -type f -exec sed -i 's/\r$//' {} +
 
 RUN chmod 0755 /runner/run.sh /runner/tool/sla_search.py \

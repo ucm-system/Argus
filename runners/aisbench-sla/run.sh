@@ -53,7 +53,7 @@
 # =============================================================================
 set -uo pipefail   # 不用 -e：任何一步失败也要把 result.json 写出来（§5.9）
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 OUT="${AG_OUTPUT_DIR:-/workspace/output}"
 LOG_DIR="${OUT}/logs"
 RAW_DIR="${OUT}/raw"
@@ -377,6 +377,7 @@ def tail_truncate(path, limit):
 
 
 candidates = [
+    "result.html",
     "sla_out/sla_summary.json",
     "sla_out/sla_points.csv",
     "sla_out/run.log",
@@ -548,12 +549,15 @@ param_error() {
 
 # 运行期硬失败出口（work_path 不可写、摘要损坏等）：写 result.json 后退出 1。
 # 这些都不是参数错误（参数本身合法），所以退出码用 1、code 用 RUNNER_NONZERO_EXIT。
+# 可选第 3/4 参：平台码表里的 code 与 retryable（如 ENDPOINT_UNREACHABLE → retryable=true）。
 hard_fail() {
   local message="$1"
   local note="${2:-}"
+  local code="${3:-RUNNER_NONZERO_EXIT}"
+  local retryable="${4:-false}"
   log "失败：${message}"
-  AG_STATUS=failed AG_CODE=RUNNER_NONZERO_EXIT AG_REASON="${message}" \
-  AG_RETRYABLE=false AG_RC="" AG_EXTRA_NOTE="${note}" \
+  AG_STATUS=failed AG_CODE="${code}" AG_REASON="${message}" \
+  AG_RETRYABLE="${retryable}" AG_RC="" AG_EXTRA_NOTE="${note}" \
     write_result || log "result.json 写入失败"
   exit 1
 }
@@ -629,6 +633,10 @@ PYPARSE
     case "${key}" in
       SLA)                 SLA_ITEMS+=("${val}") ;;
       AISBENCH_EXTRA_ARGS) AISBENCH_EXTRA="${val}" ;;   # shell 侧变量名与 jsonl 键不同
+      # 同类：jsonl 键 → shell 侧变量名不同，漏了映射会**静默丢参数**
+      # （v2 重构引入：start/max 一直被丢，阶梯永远从 1 开始——容器冒烟复现后修复）
+      START)               START_C="${val}" ;;
+      MAX)                 MAX_C="${val}" ;;
       *)                   printf -v "${key}" '%s' "${val}" ;;
     esac
   done < "${PARSED_TMP}"
@@ -689,6 +697,15 @@ fi
 [ -n "${URL}" ]        || param_error "缺少被测服务地址（--url 或环境变量 AG_SERVED_URL，公共参数 §5.4.1）"
 [ -n "${WORK_PATH}" ]  || param_error "缺少 work_path（输入文件字段；ais_bench 源码根，工具要求存在且可写）"
 [ "${#SLA_ITEMS[@]}" -gt 0 ] || param_error "缺少 sla（输入文件字段；SLA 搜索至少需要一条约束，如 {\"sla\":[\"ttft.avg:1200\"]}）"
+
+# --- AG_MODEL_PATH 前置校验（kind 实测，Task t-20261127-0A7P）---------------------
+# ais_bench 的 default_perf 汇总器自己会 load_tokenizer(模型配置的 path)——路径缺失/不存在
+# 会在**压测跑完之后**才报 UTILS-CFG-002 / UTILS-FILE-003，白烧几分钟。这里提前拦下。
+# （旧版口径是「不校验存在性，缺了由 ais_bench 报」——本地实测认为提前拦更划算，已改。）
+[ -n "${MODEL_PATH}" ] || param_error "缺少容器内 tokenizer 路径（--model_path 或环境变量 AG_MODEL_PATH，公共参数 §5.4.1）：ais_bench 的性能汇总器要用它算 token 数。部署模式由 service-deploy 导出；外接模式（service: 块）平台目前不注入，可在 Task 里给 env: {AG_MODEL_PATH: /models/<模型名>}，或按 D-63 配统一共享挂载"
+case "${MODEL_PATH}" in
+  /*) [ -d "${MODEL_PATH}" ] || param_error "AG_MODEL_PATH 指向的目录不存在：${MODEL_PATH}（容器内绝对路径；由 D-63 统一共享挂载或 Profile 挂载提供，本 Runner 不代管权重）" ;;
+esac
 
 is_uint "${INPUT_LEN:-2048}"   || param_error "input_len 必须是非负整数"
 is_uint "${OUTPUT_LEN:-32}"    || param_error "output_len 必须是非负整数"
@@ -833,6 +850,31 @@ trap cleanup_model_cfg EXIT
 
 log "SLA 搜索：target=${TARGET} model=${MODEL_NAME:-<未指定>} work_path=${WORK_PATH}"
 log "SLA 约束：$(printf '%s ' ${SLA_ITEMS[@]+"${SLA_ITEMS[@]}"})| 并发 ${START_C:-1}→${MAX_C:-256} 预算 ${MAX_PROBES:-20} 点"
+log "寻址：url=${TARGET} model_path=${MODEL_PATH}（model_path 必须是容器内可加载的 tokenizer 目录）"
+
+# --- 被测服务可达性预检（kind 实测：新建 Pod 的前 1-2 分钟 pod→service 转发未就绪，
+# endpoint-probe/工具可能要第 7 次才通；单次探测会把「还没就绪」误判成「不可达」）--------
+if ! python3 - "${TARGET}" <<'PYPROBE' >&2
+import socket, sys
+from urllib.parse import urlparse
+
+url = sys.argv[1]
+parsed = urlparse(url if "://" in url else "http://" + url)
+host = parsed.hostname or ""
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+for attempt in range(12):
+    try:
+        with socket.create_connection((host, port), timeout=10):
+            sys.exit(0)
+    except OSError as exc:
+        print(f"[probe] 第 {attempt + 1} 次：TCP 连不上 {host}:{port}：{exc}", file=sys.stderr)
+        import time; time.sleep(5)
+sys.exit(1)
+PYPROBE
+then
+  hard_fail "被测服务不可达：${TARGET}（约 3 分钟内 12 次 TCP 连接都失败）。若 precheck 是通过的，说明是集群网络还没就绪或 NetworkPolicy 没放行被测端口" \
+    "" "ENDPOINT_UNREACHABLE" "true"
+fi
 printf '[%s] 命令：%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(mask_argv "${CMD[@]}")" >> "${LOG}"
 if [ -n "${ENDPOINT_API_KEY:-}" ]; then
   log "已通过环境变量注入 ENDPOINT_API_KEY（不进 argv、不落日志、不写临时配置）"
@@ -903,6 +945,16 @@ fi
 log "结论：status=${STATUS} code=${CODE:-<无>} rc=${RC} ${REASON}"
 AG_TOOL_VERSION="$(sed -n 's/.*"tool": "aisbench-sla \([^"]*\)".*/\1/p' "${SLA_OUT}/sla_summary.json" 2>/dev/null | head -n1)"
 export AG_TOOL_VERSION
+
+# --- 观察面：result.html 阶梯对比报告（自包含 HTML，浏览器直开）-------------------
+# 数据源是已校验的 sla_summary.json（run.sh 的 PYRESULT 已确认可解析）；
+# 失败只告警不终止——报告是观察面，不能影响 result.json 的产出与退出码。
+AG_DURATION_MS="$(( $(date +%s) - START_EPOCH ))" \
+AG_RUNNER_VERSION="${VERSION}" AG_TASK_ID="${TASK_ID}" AG_ATTEMPT="${ATTEMPT_NO}" \
+AG_RUNNER_SEQ="${RUNNER_SEQ}" \
+python3 /runner/report.py --summary "${SLA_OUT}/sla_summary.json" --out "${OUT}" \
+  && log "已生成 result.html 阶梯报告" \
+  || log "警告：result.html 生成失败（不影响 result.json 与退出码）"
 
 if ! AG_STATUS="${STATUS}" AG_CODE="${CODE}" AG_REASON="${REASON}" \
      AG_RETRYABLE="${RETRYABLE}" AG_RC="${RC}" AG_EXTRA_NOTE="" write_result; then
