@@ -7,9 +7,11 @@ description: |
   逐点写 ais_bench 配置并调用 ais_bench 压测，命中率按目标服务 /metrics 快照差分给出（只作证据，不参与判定）。
   只回答「这套服务在给定负载形态下能扛到几并发、吞吐多少」；是否达标由下游消费指标判断。
 
-  0.2.0 起镜像基于官方 AISBench benchmark 镜像（ghcr.io/aisbench/aisbench_benchmark，
-  3.1.20260330 / py310），`ais_bench` 是真命令；stub 仍留在镜像里仅供离线回归
-  （`aisbench_cmd=/runner/tool/tests/stub_aisbench.py`）。
+  0.6.0 起镜像与 aisbench-prefix 统一为**自打多架构**（python:3.10-slim + CPU torch +
+  pip `ais-bench-benchmark==3.1.20260630`，~1.5GB）：官方镜像只有 x86_64 tag 且 6.4GB，
+  NPU/CANN 栈本 Runner 用不上。版本从钉死的 0330 漂移到 20260630——已在 kind 上用
+  20260630 真跑通整条链路（Task t-20261127-TMXF），parse.py 依赖的汇总表格式在该版本
+  解析正常；aisbench_cmd 仍可指向 stub 供离线回归。
   0.4.0 起 `sla_max_concurrency` 只取**实测并发达到目标 80%** 的 PASS 点：压不满的点标
   degraded、不参与取值；`ENDPOINT_API_KEY` 只走环境变量（不进 argv、不落日志、不留临时配置）。
 

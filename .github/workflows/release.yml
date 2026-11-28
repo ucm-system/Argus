@@ -5,16 +5,16 @@
 #   - 手工 workflow_dispatch（可填 tag 与平台，用于补发/回滚验证）
 #   - PR → 只构建 **amd64**、不推送（防止 Dockerfile 腐烂）
 #
-# 构建策略（2026-11-27 改）：**按架构原生跑，不用 QEMU**——
+# 构建策略（2026-11-27 改双 job 原生 runner；2026-11-28 起完全弃用 QEMU）——
 #   - discover 生成「镜像 × 平台」叉积矩阵：amd64 腿跑 `ubuntu-latest`，arm64 腿跑
 #     `ubuntu-24.04-arm`（public 仓库免费的原生 arm runner）。两腿各自原生构建、
 #     `push-by-digest`，最后 `merge` job 用 `docker buildx imagetools create`
 #     合成 manifest list 并打 tag（docker 官方推荐的多平台做法）。
-#   - 动机：aisbench-prefix 这类镜像要在 Dockerfile 里 `pip install torch + 全套依赖`，
+#   - 动机：aisbench-prefix/sla 这类镜像要在 Dockerfile 里 `pip install torch + 全套依赖`，
 #     QEMU 模拟下解依赖要几十分钟，原生 arm runner 是分钟级。
-#   - binfmt/QEMU 仍装一步，**只有** `aisbench-sla` 需要：它的基镜像
-#     `ghcr.io/aisbench/aisbench_benchmark:…x86_64_py_310` 本身是单架构，arm 腿上必须靠
-#     binfmt 跑 x86_64 的 RUN 步骤。其余镜像在原生 runner 上装 binfmt 无副作用（~10s）。
+#   - 2026-11-28：aisbench-sla 镜像也改成自打多架构（python slim + pip ais_bench），
+#     所有镜像的基镜像均为多架构 → **binfmt/QEMU 步骤整个移除**。
+#     server/web 本来就是 `$BUILDPLATFORM` 交叉编译（go/node），不需要模拟。
 #
 # 镜像落点（GHCR，公开仓库用 GITHUB_TOKEN 即可，无需额外 Secret）：
 #   ghcr.io/<owner>/argus-server:<tag>  +  :sha-<12>
@@ -157,9 +157,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # binfmt/QEMU：只为 aisbench-sla（基镜像单架构 x86_64）在 arm 腿上跑 RUN 步骤；
-      # 其余镜像原生构建，装它无副作用（~10s）。
-      - uses: docker/setup-qemu-action@v3
+      # 全部镜像的基镜像均为多架构（python/alpine slim、$BUILDPLATFORM 交叉编译），
+      # 原生 runner 上不需要 binfmt/QEMU——2026-11-28 aisbench-sla 改自打多架构后移除。
       - uses: docker/setup-buildx-action@v3
 
       # 组织策略把默认 workflow 权限锁成 read 时，GITHUB_TOKEN 拿不到 packages:write
