@@ -198,7 +198,7 @@ python:3.10-slim-bookworm                    # 多架构官方基础镜像
   先装 CPU 版后，ais_bench 的依赖检查直接满足。镜像约 1.5 GB 量级。
 - **arm64 可行性**：依赖里唯一需要预编译产物的 `tree_sitter_languages` 在 PyPI 上有
   `manylinux_2_17_aarch64` wheel（cp310/311/312 都有），所以 arm64 侧不需要源码编译。
-  （CI 里 arm64 腿跑**原生** `ubuntu-24.04-arm` runner——public 仓库免费，不再走 QEMU；
+  （CI 里 arm64 腿跑**原生** `ubuntu-24.04-arm` runner——public 仓库免费，QEMU 已整个移除；
   详见 `.github/workflows/release.yml` 头注释。）
 - **版本钉死**（§6.2）：`ARG AIS_BENCH_VERSION=3.1.20260630`，禁止 latest；
   镜像源可用 `ARG PIP_INDEX_URL` / `ARG TORCH_INDEX_URL` 覆盖给内网构建。
@@ -411,8 +411,8 @@ docker run --rm --entrypoint bash \
 9. **`work_path`/`dataset_path` 必须在 `/tmp` 或 `/workspace/output` 下**（平台只读根文件系统）。
    `work_path` 可写性探测失败时直接 `failed`，不会硬跑。
 10. **arm64 构建走原生 runner**：release.yml 的 arm64 腿跑 `ubuntu-24.04-arm`（public 仓库
-    免费），不再是 QEMU 模拟——torch/pandas 这类重依赖的解依赖从几十分钟降到分钟级。
-    本机 `--platform linux/arm64`（binfmt 模拟）构建过一次作为 Dockerfile 的 arm 安全性证据，
+    免费），QEMU 步骤已整个移除（aisbench-sla 0.6.0 起镜像同样自打多架构后，所有镜像
+    基镜像均为多架构）——torch/pandas 这类重依赖的解依赖从几十分钟降到分钟级。
     CI 上是原生速度。
 
 ## 维护者验证清单

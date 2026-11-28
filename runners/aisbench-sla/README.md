@@ -267,10 +267,19 @@ docker push registry.dev.huawei.com/argus/aisbench-sla:0.6.0
 > `runners/aisbench-sla/runners/aisbench-sla/run.sh` → 发版时构建失败（评审 #62 硬问题 3；
 > PR 的 CI 只构建 server/web，所以一直绿着）。0.4.0 已改成相对 Runner 目录。
 
-**只有一种发布镜像**（用户 2026-11-09 拍板）：`build/Dockerfile` 就是真镜像，基础镜像为
-`ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-master_x86_64_py_310`（6.39 GB，镜像里
-`ais_bench` 是真命令）。曾经的 `Dockerfile.aisbench` 已删除——它和 `build/Dockerfile` 并存时，
-发布矩阵只构建后者，于是**发出去的是 stub 假镜像**，真镜像反而因为依赖本地 tokenizer 构建不出来。
+**只有一种发布镜像**（用户 2026-11-09 拍板单一发布；**2026-11-28 镜像路线统一**）：
+`build/Dockerfile` 现与 aisbench-prefix 同款——**自打多架构**（`python:3.10-slim` + CPU
+torch + pip `ais-bench-benchmark==3.1.20260630`，~1.5GB）。曾经的 `Dockerfile.aisbench`
+已删除——它和 `build/Dockerfile` 并存时，发布矩阵只构建后者，于是**发出去的是 stub 假镜像**，
+真镜像反而因为依赖本地 tokenizer 构建不出来。
+
+**为什么 2026-11-28 弃用官方镜像路线**（原 FROM
+`ghcr.io/aisbench/aisbench_benchmark:v3.1-20260330-master_x86_64_py_310`，6.39 GB）：官方
+ghcr tag 只有单架构 x86_64（arm 发版腿要靠 binfmt 模拟跑 x86 的 RUN 步骤，慢）、6.4GB 里
+大半是 NPU/CANN/mindie 栈（本 Runner 只走 API 压测用不上）。版本从钉死的 0330 漂移到
+PyPI 的 20260630——kind 真跑（Task t-20261127-TMXF，aisbench-prefix 0.1.4）已用该版本
+跑通整条链路；sla 的 url 归一化按「服务根」传参，0330/0630 两种 base_api 行为下结果一致；
+parse.py 依赖的汇总表格式在该版本解析正常（stub 冒烟锁住）。aisbench_cmd 仍可指向 stub。
 
 | 产物 | 来自 | 用途 |
 |---|---|---|
@@ -280,7 +289,7 @@ docker push registry.dev.huawei.com/argus/aisbench-sla:0.6.0
 发版矩阵只扫 `runners/<name>/build/Dockerfile*`，所以 `tests/Dockerfile.stub` **不会**进发布
 （这是有意的：stub 只证明入口与结果映射，不证明模型能力）。
 
-镜像内容：官方 ais_bench 基础镜像 + `/runner/run.sh` + `/runner/tool`（vendored）+ `/runner/fixtures`；
+镜像内容：python:3.10-slim + CPU torch + pip ais_bench 20260630 + `/runner/run.sh`+`/runner/report.py` + `/runner/tool`（vendored）+ `/runner/fixtures`；
 非 root（uid 10001），`/tmp`、`/models`、`/runner`、`/workspace` 都归 10001；
 `HOME`/`HF_HOME` 收到 `/tmp`（非 root 没有 `/home`，否则 HF 缓存会炸）。
 
@@ -551,7 +560,7 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
    stub 仍有用：本机 kind 里的 `sla-mock` Deployment 就是用它跑 `tool/tests/mock_vllm.py`。
 
    （6.39 GB 的真镜像不适合跑一个 mock）
-2. **stub 镜像不能现场生成数据集**：真镜像自带 `transformers`，可以
+2. **stub 镜像不能现场生成数据集**：真镜像带 `transformers`（随 ais-bench wheel 依赖），可以
    （`--dataset_type=normal|prefix_cache` + `--model_path` 指 tokenizer 目录即可）；stub 镜像仍需
    `--dataset`。给了 `--dataset` 时工具跳过生成；`--model_path` **不做存在性校验**（路径由平台统一挂载提供）。
    注意工具在 `--seed-per-point`（默认）下**会忽略 `--dataset`** 去重新生成——所以 `run.sh` 在 `--dataset`
