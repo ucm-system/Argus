@@ -6,15 +6,15 @@
 
 | 镜像 | index digest |
 |---|---|
-| `ghcr.io/ucm-system/argus-server:0.3.0` | _打 tag 后由 release job summary 回填_ |
-| `ghcr.io/ucm-system/argus-web:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-aisbench-sla:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-agentx:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-endpoint-probe:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-genet-deploy:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-genet-clean:0.3.0` | _同上_ |
-| `ghcr.io/ucm-system/argus-runner-mock-deploy:0.3.0` | _同上_ |
+| `ghcr.io/ucm-system/argus-server:0.3.0` | `sha256:5488baf1b55e70deb7741a0830af29659df5e7838706a70de2407a047cc4965b` |
+| `ghcr.io/ucm-system/argus-web:0.3.0` | `sha256:9db66964672653dbe9a2a2e0edeb5f19d106190d95fee37ea7569a7e107d48b8` |
+| `ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.3.0` | `sha256:29f94e40c9438bb0375fcfbfb78c8cf037522d8a54c5d09904896514c31596ea` |
+| `ghcr.io/ucm-system/argus-runner-aisbench-sla:0.3.0` | `sha256:d661b05994808bc9bf9f04c9ed5fd1d8c638cd71fd2b3ef90b873b99c0ccedbc` |
+| `ghcr.io/ucm-system/argus-runner-agentx:0.3.0` | `sha256:67717043ff355c193a65f69be4f26c7ef0e9d070d19148292aea07de3ac7c6d3` |
+| `ghcr.io/ucm-system/argus-runner-endpoint-probe:0.3.0` | `sha256:d00e4802205c848fa219c55e822568b2046344fdc7c4be3c7a9593c5291ad8c7` |
+| `ghcr.io/ucm-system/argus-runner-genet-deploy:0.3.0` | `sha256:b3dbde744529b88814bec623e427d0863dcde65b7d0ab7f72ad4852c62bdb0cc` |
+| `ghcr.io/ucm-system/argus-runner-genet-clean:0.3.0` | `sha256:3545b5b4b9e40336a38bd3e411f85ebe61d74a23d60b5becd56f2804d77b7ddb` |
+| `ghcr.io/ucm-system/argus-runner-mock-deploy:0.3.0` | `sha256:52a1172efbb83ae8af1a2efe34c881599bc5d0effed8594b1215a413cf47e117` |
 
 > 发版矩阵自动发现 `runners/*/build/Dockerfile`（加 Runner 不用改 workflow）；构建双 job 原生 runner（amd64=`ubuntu-latest`、arm64=`ubuntu-24.04-arm`，public 仓库免费）+ `imagetools create` 合清单——**binfmt/QEMU 步骤已整个移除**，所有镜像基镜像均为多架构。
 
