@@ -57,7 +57,7 @@ input_format: jsonl
 # 直接 FROM 它过不了 release.yml 的双架构清单校验，所以这里按上游 docker/ubuntu/Dockerfile 的思路
 # 自己打：python:3.10-slim（多架构）+ `pip install ais-bench-benchmark==3.1.20260630`。
 # 本 Runner 只用 ais_bench 的 API 压测路径（HTTP 打被测服务），不需要镜像里的 NPU/CANN 栈。
-image: ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.1.4
+image: ghcr.io/ucm-system/argus-runner-aisbench-prefix:0.3.0
 
 resources:
   cpu: "2"

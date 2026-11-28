@@ -18,9 +18,9 @@
 | 术语表（v1→v2 映射与命名消歧） | ✅ | [`GLOSSARY.md`](GLOSSARY.md) |
 | 可点击原型（6 个页面 + 全状态谱） | ✅ 可交互 | [`design/prototype/`](design/prototype/) |
 | 参考 Runner：endpoint-probe（Pre-Check） | ✅ 可运行（已改 v2 契约：`runner.yaml` + entry + jsonl 输入） | [`runners/endpoint-probe/`](runners/endpoint-probe/) |
-| 实际 Runner：aisbench-sla（前缀缓存 SLA 搜索） | ✅ 可运行（真实 SLA 需 ais_bench 镜像 + 权重） | [`runners/aisbench-sla/`](runners/aisbench-sla/) |
+| 实际 Runner：aisbench-sla（前缀缓存 SLA 搜索） | ✅ 可运行（0.6.0：result.html 阶梯报告 + 前置校验；真实 SLA 需 ais_bench + 权重/tokenizer） | [`runners/aisbench-sla/`](runners/aisbench-sla/) |
 | 实际 Runner：agentx（长上下文 agentic 压测） | ✅ 可运行（真实压测需 1.85GB Weka 语料 + 被测服务；离线可跑 stub 冒烟） | [`runners/agentx/`](runners/agentx/) |
-| 实际 Runner：aisbench-prefix（前缀缓存性能测量 / 并发阶梯 + 命中率） | ✅ 可运行（kind 真跑通过；离线冒烟 43 项全绿） | [`runners/aisbench-prefix/`](runners/aisbench-prefix/) |
+| 实际 Runner：aisbench-prefix（前缀缓存性能测量 / 并发阶梯 + 命中率） | ✅ 可运行（0.1.4：kind 三点阶梯真跑通过；三观察面 json/html/csv；离线冒烟 55 项全绿） | [`runners/aisbench-prefix/`](runners/aisbench-prefix/) |
 | 实现技术方案（总览 + 三份分册） | 🟢 提案 v3（12 项决策已并入；v2 更名随代码改造对齐） | [`design/IMPLEMENTATION.md`](design/IMPLEMENTATION.md) |
 | 4+1 设计视图（场景 / 逻辑 / 数据 / 进程 / 开发 / 部署 / API） | 🟢 可开发基线（v2 修订中） | [`design/views/`](design/views/) |
 | 契约：OpenAPI 3.1 | ✅ 定稿（**v2**：`/tasks` / `/runners`，与代码一致） | [`server/api/openapi.yaml`](server/api/openapi.yaml) |
